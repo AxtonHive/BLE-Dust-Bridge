@@ -70,7 +70,10 @@
       overflow: visible;
     }
     #bldb-top-dialog::backdrop {
-      background: rgba(24, 36, 30, 0.72);
+      background: rgba(24, 36, 30, 0.78);
+    }
+    @keyframes bldbSpin {
+      to { transform: rotate(360deg); }
     }
   </style>
 </head>
@@ -102,7 +105,8 @@
 
     (function () {
       window.__bldbWizardActive = false;
-      window.__bldbWizardStep = 'NONE'; // NONE | CONFIRM_ERASE | FLASHING | WIFI | PASSWORD | SETUP_COMPLETE | MAIN_MENU | MENU_WIFI | MENU_PASSWORD | ERROR
+      // NONE | CONFIRM_ERASE | STARTING_FLASH | FLASHING | ADVANCING_WIFI | WIFI | PASSWORD | SETUP_COMPLETE | MAIN_MENU | MENU_WIFI | MENU_PASSWORD | ERROR
+      window.__bldbWizardStep = 'NONE';
       window.__bldbDeviceUrl = 'http://bldb.local';
       window.__bldbDeviceIpUrl = '';
       window.__bldbAutoClickedInstall = false;
@@ -202,6 +206,17 @@
         }
       }
 
+      function clickElementDeep(el) {
+        if (!el) return;
+        try { el.click(); } catch (_) {}
+        if (el.shadowRoot) {
+          const inner = el.shadowRoot.querySelector('button, a, [role="button"]');
+          if (inner) {
+            try { inner.click(); } catch (_) {}
+          }
+        }
+      }
+
       function findOuterMenuItem(el, boundaryRoot) {
         let cur = el;
         let best = null;
@@ -242,19 +257,19 @@
         const instItem = els.find((e) => getElLabel(e).indexOf('Install BLE Dust Bridge') !== -1);
         if (instItem && !window.__bldbAutoClickedInstall) {
           window.__bldbAutoClickedInstall = true;
-          instItem.click();
+          clickElementDeep(instItem);
         } else if ('_state' in ewtDlg && ewtDlg._state !== 'CONFIRM') {
           ewtDlg._state = 'CONFIRM';
           if (typeof ewtDlg.requestUpdate === 'function') ewtDlg.requestUpdate();
         }
       }
 
-      function executeConfirmedEraseAndInstall() {
+      function triggerUnderlyingFlashInstall() {
         const ewtDlg = document.querySelector('ewt-install-dialog');
-        const sr = (ewtDlg && ewtDlg.shadowRoot) || document.body;
+        if (!ewtDlg) return false;
+        const sr = ewtDlg.shadowRoot || ewtDlg;
         const els = findAllElementsDeep(sr);
 
-        // Force "Erase device" checkbox ON
         const cb = els.find(
           (e) =>
             (e.tagName === 'INPUT' && e.type === 'checkbox') ||
@@ -269,31 +284,37 @@
             cb.checked = true;
             cb.setAttribute('aria-checked', 'true');
             cb.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-            cb.click();
+            clickElementDeep(cb);
           }
         }
-        if (ewtDlg && '_erase' in ewtDlg) {
+        if ('_erase' in ewtDlg) {
           ewtDlg._erase = true;
         }
 
-        window.__bldbWizardActive = true;
-        window.__bldbWizardStep = 'FLASHING';
-        window.__bldbAutoClickedNext = false;
-        hideTopDialog();
+        const installBtn = els.find((e) => {
+          if (!e.matches || !e.matches(BTN_SELECTOR)) return false;
+          const t = getElLabel(e);
+          return t === 'Install' || t === 'Erase & Install';
+        });
+        if (installBtn) {
+          clickElementDeep(installBtn);
+          return true;
+        }
+        if (typeof ewtDlg._startInstall === 'function') {
+          ewtDlg._startInstall(true);
+          return true;
+        }
+        return false;
+      }
 
-        setTimeout(() => {
-          const freshEls = findAllElementsDeep((ewtDlg && ewtDlg.shadowRoot) || document.body);
-          const installBtn = freshEls.find((e) => {
-            if (!e.matches || !e.matches(BTN_SELECTOR)) return false;
-            const t = getElLabel(e);
-            return t === 'Install' || t === 'Erase & Install';
-          });
-          if (installBtn) {
-            installBtn.click();
-          } else if (ewtDlg && typeof ewtDlg._startInstall === 'function') {
-            ewtDlg._startInstall(true);
-          }
-        }, 50);
+      function executeConfirmedEraseAndInstall() {
+        window.__bldbWizardActive = true;
+        window.__bldbWizardStep = 'STARTING_FLASH';
+        window.__bldbAutoClickedNext = false;
+        // Keep #bldb-top-dialog visible in STARTING_FLASH state so the native
+        // "Confirm Installation" screen underneath is never shown to the user.
+        showTopScreen('STARTING_FLASH');
+        triggerUnderlyingFlashInstall();
       }
 
       function showTopScreen(mode) {
@@ -324,6 +345,22 @@
         const card = document.createElement('div');
         card.style.cssText =
           'width:100%;background:#f7f3e3;border:1px solid #dfd9c5;border-radius:16px;padding:24px 22px;box-shadow:0 18px 42px rgba(0,0,0,0.36);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#1f2e26;text-align:left;';
+
+        if (mode === 'STARTING_FLASH' || mode === 'ADVANCING_WIFI') {
+          const titleTxt = (mode === 'STARTING_FLASH')
+            ? 'Preparing installation...'
+            : 'Loading Wi-Fi setup...';
+          card.innerHTML = `
+            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:22px 10px;text-align:center;">
+              <div style="width:36px;height:36px;border:3px solid #dfd9c5;border-top-color:#283b31;border-radius:50%;animation:bldbSpin 0.8s linear infinite;margin-bottom:14px;"></div>
+              <div style="font-size:1rem;font-weight:700;color:#283b31;">${titleTxt}</div>
+            </div>
+          `;
+          dlg.appendChild(card);
+          if (dlg.open) dlg.close();
+          dlg.showModal();
+          return;
+        }
 
         if (mode === 'CONFIRM_ERASE') {
           card.innerHTML = `
@@ -503,7 +540,7 @@
                 return t === 'Connect to Wi-Fi' || t === 'Change Wi-Fi';
               });
               if (wifiBtn) {
-                wifiBtn.click();
+                clickElementDeep(wifiBtn);
               } else if ('_state' in ewtDlg) {
                 ewtDlg._state = 'IMPROV_WIFI';
                 if (typeof ewtDlg.requestUpdate === 'function') ewtDlg.requestUpdate();
@@ -530,8 +567,15 @@
           let n;
           while ((n = walker.nextNode())) {
             const v = n.nodeValue || '';
-            if (v.indexOf('This will take 2 minutes') !== -1 || v.indexOf('Keep this page visible') !== -1) {
+            if (
+              v.indexOf('This will take 2 minutes') !== -1 ||
+              v.indexOf('take 2 minutes') !== -1 ||
+              v.indexOf('Keep this page visible') !== -1
+            ) {
               n.nodeValue = '';
+              if (n.parentElement && n.parentElement.tagName !== 'EWT-INSTALL-DIALOG') {
+                n.parentElement.style.setProperty('display', 'none', 'important');
+              }
             }
           }
         });
@@ -545,7 +589,7 @@
         const fullText = getDeepText(ewtDlg.shadowRoot || ewtDlg);
         const allEls = findAllElementsDeep(ewtDlg.shadowRoot || ewtDlg);
 
-        // Always strip "This will take 2 minutes." across all shadow roots
+        // Always strip "This will take 2 minutes." across every shadow root
         stripTwoMinutesCopy(roots);
 
         allEls.forEach((el) => {
@@ -610,19 +654,43 @@
           return;
         }
 
-        // 3. Flashing screen -> once the percentage ring appears, hide copy underneath it
-        //    (never strip text on "Connecting" or "Preparing installation" so those screens never go blank)
+        // 3. STARTING_FLASH -> keep Top Layer modal covering native "Confirm Installation"
+        //    until the underlying dialog advances to the percentage ring
         const progressRingEl = allEls.find((e) => e.tagName === 'EWT-PROGRESS-RING');
-        if (window.__bldbWizardStep === 'FLASHING') {
-          hideTopDialog();
+        if (window.__bldbWizardStep === 'STARTING_FLASH') {
+          if (progressRingEl) {
+            window.__bldbWizardStep = 'FLASHING';
+            hideTopDialog();
+          } else {
+            showTopScreen('STARTING_FLASH');
+            triggerUnderlyingFlashInstall();
+            return;
+          }
         }
+
+        // 4. Flashing screen -> show ONLY the percentage circle with zero copy underneath it
         if (progressRingEl) {
-          hideTopDialog();
+          if (window.__bldbWizardStep !== 'FLASHING' && window.__bldbWizardStep !== 'ADVANCING_WIFI') {
+            window.__bldbWizardStep = 'FLASHING';
+          }
+          if (window.__bldbWizardStep === 'FLASHING') {
+            hideTopDialog();
+          }
           const ringSr = progressRingEl.shadowRoot;
           allEls.forEach((el) => {
-            if (ringSr && (el === progressRingEl || ringSr.contains(el))) return;
+            if (el === progressRingEl) return;
+            if (ringSr && ringSr.contains(el)) return;
+            if (el.contains && el.contains(progressRingEl)) return;
             const tag = el.tagName;
-            if (tag === 'P' || tag === 'SPAN' || tag === 'DIV' || tag === 'EWT-PAGE-MESSAGE') {
+            if (
+              tag === 'P' ||
+              tag === 'SPAN' ||
+              tag === 'DIV' ||
+              tag === 'H1' ||
+              tag === 'H2' ||
+              tag === 'H3' ||
+              tag === 'EWT-PAGE-MESSAGE'
+            ) {
               const t = (el.textContent || '').trim();
               if (
                 el.children.length === 0 &&
@@ -636,19 +704,24 @@
           });
         }
 
-        // 4. Installation complete -> auto-advance immediately to Configure Wi-Fi
+        // 5. Installation complete -> cover the screen immediately (so the party-popper
+        //    modal never shows) and click Next to advance directly to Configure Wi-Fi
         if (fullText.indexOf('Installation complete') !== -1) {
+          window.__bldbWizardStep = 'ADVANCING_WIFI';
+          showTopScreen('ADVANCING_WIFI');
           const nextBtn = allEls.find((e) => e.matches && e.matches(BTN_SELECTOR) && getElLabel(e) === 'Next');
-          if (nextBtn && !window.__bldbAutoClickedNext) {
-            window.__bldbAutoClickedNext = true;
-            window.__bldbWizardStep = 'WIFI';
-            setTimeout(() => nextBtn.click(), 0);
+          if (nextBtn) {
+            clickElementDeep(nextBtn);
+          } else if ('_state' in ewtDlg) {
+            ewtDlg._state = 'IMPROV_WIFI';
+            if (typeof ewtDlg.requestUpdate === 'function') ewtDlg.requestUpdate();
           }
           return;
         }
 
-        // 5. Configure Wi-Fi screen -> ensure "Skip" and "Continue" buttons
+        // 6. Configure Wi-Fi screen -> hide Top Layer overlay and show Skip + Continue
         if (
+          window.__bldbWizardStep === 'ADVANCING_WIFI' ||
           window.__bldbWizardStep === 'WIFI' ||
           window.__bldbWizardStep === 'MENU_WIFI' ||
           fullText.indexOf('Configure Wi-Fi') !== -1 ||
@@ -659,6 +732,19 @@
             window.__bldbWizardStep = nextStep;
             showTopScreen(nextStep);
             return;
+          }
+
+          const hasWifiPrompt =
+            fullText.indexOf('Configure Wi-Fi') !== -1 ||
+            fullText.indexOf('Connect to Wi-Fi') !== -1 ||
+            fullText.indexOf('network') !== -1;
+
+          if (window.__bldbWizardStep === 'ADVANCING_WIFI') {
+            if (!hasWifiPrompt) {
+              showTopScreen('ADVANCING_WIFI');
+              return;
+            }
+            window.__bldbWizardStep = 'WIFI';
           }
 
           hideTopDialog();
@@ -707,7 +793,7 @@
           return;
         }
 
-        // 6. Keep Top Layer custom screen active for PASSWORD, MENU_PASSWORD, SETUP_COMPLETE, or MAIN_MENU
+        // 7. Keep Top Layer custom screen active for PASSWORD, MENU_PASSWORD, SETUP_COMPLETE, or MAIN_MENU
         if (
           window.__bldbWizardStep === 'PASSWORD' ||
           window.__bldbWizardStep === 'MENU_PASSWORD' ||
@@ -737,7 +823,7 @@
       });
       bodyObserver.observe(document.body, { childList: true, subtree: true });
 
-      setInterval(sanitizeEwtDialog, 120);
+      setInterval(sanitizeEwtDialog, 80);
     })();
   </script>
 </body>
