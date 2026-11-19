@@ -3377,6 +3377,39 @@ void serviceSerialAndImprov(unsigned long now) {
                     cmd.toLowerCase();
                     if (cmd == "status" || cmd == "help" || cmd == "info") {
                         printSerialStatusBanner();
+                    } else if (cmd.startsWith("bldb_set_auth ")) {
+                        String jsonPart = rawLine;
+                        jsonPart.trim();
+                        jsonPart = jsonPart.substring(14);
+                        jsonPart.trim();
+                        StaticJsonDocument<256> doc;
+                        if (deserializeJson(doc, jsonPart) == DeserializationError::Ok) {
+                            bool en = doc["en"] | false;
+                            if (!en) {
+                                auth_en = false;
+                                clearAllAuthSessions();
+                                prefs.putBool("auth_init", true);
+                                prefs.putBool("auth_en", false);
+                                LOGLN("[SERIAL] Web UI login disabled (None) via Web Installer.");
+                            } else {
+                                String u = doc["user"] | "";
+                                String p = doc["pass"] | "";
+                                u.trim();
+                                if (u.length() > 0 && p.length() > 0) {
+                                    auth_en = true;
+                                    auth_user = u;
+                                    auth_salt = generateRandomHex(16);
+                                    auth_hash = sha256Hex(auth_salt + ":" + auth_user + ":" + p);
+                                    clearAllAuthSessions();
+                                    prefs.putBool("auth_init", true);
+                                    prefs.putBool("auth_en", true);
+                                    prefs.putString("auth_user", auth_user);
+                                    prefs.putString("auth_salt", auth_salt);
+                                    prefs.putString("auth_hash", auth_hash);
+                                    LOGF("[SERIAL] Web UI login configured for '%s' via Web Installer.\n", auth_user.c_str());
+                                }
+                            }
+                        }
                     }
                     serialLineLen = 0;
                 } else if (b == '\n') {
