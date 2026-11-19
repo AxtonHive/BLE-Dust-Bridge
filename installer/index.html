@@ -492,6 +492,14 @@
           startSerialReader();
           return true;
         } catch (_) {
+          if (attempt >= 3 && navigator.serial && navigator.serial.getPorts) {
+            try {
+              const ports = await navigator.serial.getPorts();
+              if (ports && ports.length === 1) {
+                state.port = ports[0];
+              }
+            } catch (_) {}
+          }
           await sleep(250);
         }
       }
@@ -701,6 +709,11 @@
         const binRes = await fetch(part.path, { cache: 'no-store' });
         if (!binRes.ok) throw new Error('Unable to download firmware binary (' + part.path + ').');
         const firmwareBytes = new Uint8Array(await binRes.arrayBuffer());
+        let firmwareBstr = '';
+        const chunkSize = 0x4000;
+        for (let i = 0; i < firmwareBytes.length; i += chunkSize) {
+          firmwareBstr += String.fromCharCode.apply(null, firmwareBytes.subarray(i, i + chunkSize));
+        }
 
         transport = new Transport(state.port, false);
         const terminal = { clean() {}, writeLine() {}, write() {} };
@@ -713,7 +726,7 @@
 
         await loader.main();
         await loader.writeFlash({
-          fileArray: [{ data: firmwareBytes, address: Number(part.offset || 0) }],
+          fileArray: [{ data: firmwareBstr, address: Number(part.offset || 0) }],
           flashMode: 'keep',
           flashFreq: 'keep',
           flashSize: 'keep',
