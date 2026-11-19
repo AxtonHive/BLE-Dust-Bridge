@@ -316,6 +316,7 @@
       window.__bldbFlashed = false;
       const observedRoots = new WeakSet();
       const ROW_SELECTOR = 'ewt-icon-button, md-list-item, mwc-list-item, ewt-list-item, li, button, a, [role="menuitem"], [role="button"]';
+      const BTN_SELECTOR = 'md-text-button, md-filled-button, md-outlined-button, mwc-button, ewt-button, button, [role="button"]';
 
       function findAllElements(root, out = []) {
         if (!root) return out;
@@ -356,32 +357,46 @@
         }
       }
 
-      function findClickableRow(el, boundaryRoot) {
-        if (!el) return null;
-        if (el.matches && el.matches(ROW_SELECTOR)) return el;
-        let cur = el.parentElement;
+      function findOuterMenuItem(el, boundaryRoot) {
+        let cur = el;
+        let best = null;
         while (cur && cur !== boundaryRoot && cur !== document.body) {
-          if (cur.matches && cur.matches(ROW_SELECTOR)) return cur;
-          cur = cur.parentElement;
+          if (cur.nodeType === 1) {
+            if (cur.tagName === 'EWT-ICON-BUTTON') {
+              best = (cur.parentElement && cur.parentElement.tagName === 'A') ? cur.parentElement : cur;
+              return best;
+            }
+            if (!best && cur.matches && cur.matches(ROW_SELECTOR)) {
+              best = cur;
+            }
+          }
+          if (cur.parentElement) {
+            cur = cur.parentElement;
+          } else {
+            const rootNode = cur.getRootNode && cur.getRootNode();
+            if (rootNode && rootNode.host) {
+              cur = rootNode.host;
+            } else {
+              break;
+            }
+          }
         }
-        return el;
+        return best || el;
       }
 
-      function replaceRowIcon(rowEl, svgInnerHtml) {
-        const oldIcon = (rowEl.querySelector && rowEl.querySelector('[slot="start"], [slot="icon"], svg, mwc-icon, ha-svg-icon')) ||
-                        (rowEl.shadowRoot && rowEl.shadowRoot.querySelector('[slot="start"], [slot="icon"], svg, mwc-icon, ha-svg-icon'));
-        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        svg.setAttribute('slot', (oldIcon && oldIcon.getAttribute('slot')) || 'start');
-        svg.setAttribute('width', '24');
-        svg.setAttribute('height', '24');
-        svg.setAttribute('viewBox', '0 0 24 24');
-        svg.setAttribute('fill', 'currentColor');
-        svg.innerHTML = svgInnerHtml;
-        if (oldIcon && oldIcon.parentNode) {
-          oldIcon.parentNode.replaceChild(svg, oldIcon);
-        } else {
-          rowEl.insertBefore(svg, rowEl.firstChild);
+      function createMenuIconButton(id, svgPathD, labelText, disabled) {
+        const btn = document.createElement('ewt-icon-button');
+        btn.id = id;
+        btn.innerHTML = `<svg slot="icon" viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="${svgPathD}"/></svg>${labelText}`;
+        if (disabled) {
+          btn.disabled = true;
+          btn.setAttribute('disabled', '');
+          btn.setAttribute('aria-disabled', 'true');
+          btn.style.opacity = '0.4';
+          btn.style.pointerEvents = 'none';
+          btn.style.cursor = 'not-allowed';
         }
+        return btn;
       }
 
       function openChangePasswordModal(dialogRoot) {
@@ -432,9 +447,14 @@
           window.__bldbFlashed = true;
         }
 
+        const isEraseConfirm = fullText.indexOf('erase all user data') !== -1;
+        const isConfirmInstall = fullText.indexOf('Erase device') !== -1;
+        const isNetConnected = fullText.indexOf('Device connected to the network') !== -1;
+
         const allEls = findAllElements(root);
         let installRow = null;
         let wifiRow = null;
+        let visitLink = null;
 
         allEls.forEach((el) => {
           if (el.shadowRoot && !observedRoots.has(el.shadowRoot)) {
@@ -450,39 +470,49 @@
 
           // 2. Completely remove "Logs & Console" and "Add to Home Assistant" everywhere
           if (rawTxt === 'Logs & Console' || rawTxt === 'Add to Home Assistant') {
-            const row = findClickableRow(el, root);
+            const row = findOuterMenuItem(el, root);
             if (row) row.style.setProperty('display', 'none', 'important');
           }
 
-          // 3. Rename "Erase User Data" -> "Erase and Install Firmware"
+          // 3. Rename "Visit Device" -> "Open Settings" everywhere
+          if (rawTxt === 'Visit Device' || rawTxt === 'Open Settings') {
+            const row = findOuterMenuItem(el, root);
+            if (row) {
+              visitLink = row;
+              if (getElLabel(row) === 'Visit Device') {
+                setElementLabel(row, 'Open Settings');
+              }
+            }
+          }
+
+          // 4. Rename "Erase User Data" -> "Erase and Install Firmware"
           if (rawTxt === 'Erase User Data') {
-            const row = findClickableRow(el, root);
+            const row = findOuterMenuItem(el, root);
             setElementLabel(row || el, 'Erase and Install Firmware');
           }
 
-          // 4. Locate "Install BLE Dust Bridge" row (present when firmware is NOT yet installed)
+          // 5. Locate "Install BLE Dust Bridge" row (present only on unflashed menu)
           if (rawTxt.indexOf('Install BLE Dust Bridge') !== -1) {
-            const row = findClickableRow(el, root);
+            const row = findOuterMenuItem(el, root);
             if (row) installRow = row;
           }
 
-          // 5. Locate Wi-Fi row ("Connect to Wi-Fi", "Change Wi-Fi", or "Configure Wi-Fi")
+          // 6. Locate Wi-Fi row ("Connect to Wi-Fi", "Change Wi-Fi", or "Configure Wi-Fi")
           if (
             (rawTxt === 'Connect to Wi-Fi' || rawTxt === 'Change Wi-Fi' || rawTxt === 'Configure Wi-Fi') &&
             el.id !== 'bldb-disabled-wifi-item'
           ) {
-            const row = findClickableRow(el, root);
+            const row = findOuterMenuItem(el, root);
             if (row && row.id !== 'bldb-disabled-wifi-item') wifiRow = row;
           }
         });
 
-        // 6. Grey out "Configure Wi-Fi" if firmware has NOT been installed yet;
-        //    otherwise enable Wi-Fi and place "Change Password" directly underneath it.
-        const isUnflashedMenu = !!installRow && !window.__bldbFlashed && fullText.indexOf('Connected to BLE-Dust-Bridge') === -1;
-        if (isUnflashedMenu) {
-          const stalePw = root.querySelector ? root.querySelector('#bldb-change-pw-item') : null;
-          if (stalePw) stalePw.remove();
+        const isUnflashedMenu = !isEraseConfirm && !isConfirmInstall && !isNetConnected &&
+          !!installRow && !window.__bldbFlashed && fullText.indexOf('Connected to BLE-Dust-Bridge') === -1;
+        const isFlashedMainMenu = !isEraseConfirm && !isConfirmInstall && !isNetConnected && !!wifiRow;
 
+        // 7a. Unflashed menu: show greyed-out "Configure Wi-Fi" below "Install BLE Dust Bridge"
+        if (isUnflashedMenu) {
           if (wifiRow) {
             setElementLabel(wifiRow, 'Configure Wi-Fi');
             wifiRow.style.opacity = '0.4';
@@ -491,52 +521,48 @@
             wifiRow.setAttribute('aria-disabled', 'true');
             if ('disabled' in wifiRow) wifiRow.disabled = true;
           } else if (installRow.parentNode && !installRow.parentNode.querySelector('#bldb-disabled-wifi-item')) {
-            const disabledWifi = installRow.cloneNode(true);
-            disabledWifi.id = 'bldb-disabled-wifi-item';
-            replaceRowIcon(
-              disabledWifi,
-              '<path d="M12 18c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm-4.9-2.3l1.4 1.4C9.4 16.4 10.6 16 12 16s2.6.4 3.5 1.1l1.4-1.4C15.6 14.6 13.9 14 12 14s-3.6.6-4.9 1.7zm-2.8-2.8l1.4 1.4C7.3 13 9.5 12 12 12s4.7 1 6.3 2.3l1.4-1.4C17.7 11.1 15 10 12 10s-5.7 1.1-7.7 2.9zM1.5 10.1l1.4 1.4C5.3 9.3 8.5 8 12 8s6.7 1.3 9.1 3.5l1.4-1.4C19.7 7.5 16 6 12 6S4.3 7.5 1.5 10.1z"/>'
+            const disabledWifi = createMenuIconButton(
+              'bldb-disabled-wifi-item',
+              'M12 18c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm-4.9-2.3l1.4 1.4C9.4 16.4 10.6 16 12 16s2.6.4 3.5 1.1l1.4-1.4C15.6 14.6 13.9 14 12 14s-3.6.6-4.9 1.7zm-2.8-2.8l1.4 1.4C7.3 13 9.5 12 12 12s4.7 1 6.3 2.3l1.4-1.4C17.7 11.1 15 10 12 10s-5.7 1.1-7.7 2.9zM1.5 10.1l1.4 1.4C5.3 9.3 8.5 8 12 8s6.7 1.3 9.1 3.5l1.4-1.4C19.7 7.5 16 6 12 6S4.3 7.5 1.5 10.1z',
+              'Configure Wi-Fi',
+              true
             );
-            setElementLabel(disabledWifi, 'Configure Wi-Fi');
-            disabledWifi.disabled = true;
-            disabledWifi.setAttribute('disabled', '');
-            disabledWifi.setAttribute('aria-disabled', 'true');
-            disabledWifi.style.opacity = '0.4';
-            disabledWifi.style.pointerEvents = 'none';
-            disabledWifi.style.cursor = 'not-allowed';
             installRow.parentNode.insertBefore(disabledWifi, installRow.nextSibling);
           }
         } else {
           const staleDisabled = root.querySelector ? root.querySelector('#bldb-disabled-wifi-item') : null;
           if (staleDisabled) staleDisabled.remove();
-
-          if (wifiRow) {
-            wifiRow.style.opacity = '';
-            wifiRow.style.pointerEvents = '';
-            wifiRow.style.cursor = '';
-            wifiRow.removeAttribute('aria-disabled');
-            if ('disabled' in wifiRow) wifiRow.disabled = false;
-
-            // Add "Change Password" directly underneath "Change Wi-Fi" / "Connect to Wi-Fi"
-            if (wifiRow.parentNode && !wifiRow.parentNode.querySelector('#bldb-change-pw-item')) {
-              const pwItem = wifiRow.cloneNode(true);
-              pwItem.id = 'bldb-change-pw-item';
-              replaceRowIcon(
-                pwItem,
-                '<path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>'
-              );
-              setElementLabel(pwItem, 'Change Password');
-              pwItem.addEventListener('click', (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                openChangePasswordModal(root);
-              });
-              wifiRow.parentNode.insertBefore(pwItem, wifiRow.nextSibling);
-            }
-          }
         }
 
-        // 7. Simplify installing copy to "Installing"
+        // 7b. Flashed main menu ONLY: show "Change Password" directly underneath "Change Wi-Fi";
+        //     remove it immediately when navigating to Erase Confirmation, Wi-Fi list, or any other screen.
+        if (isFlashedMainMenu && wifiRow) {
+          wifiRow.style.opacity = '';
+          wifiRow.style.pointerEvents = '';
+          wifiRow.style.cursor = '';
+          wifiRow.removeAttribute('aria-disabled');
+          if ('disabled' in wifiRow) wifiRow.disabled = false;
+
+          if (wifiRow.parentNode && !wifiRow.parentNode.querySelector('#bldb-change-pw-item')) {
+            const pwItem = createMenuIconButton(
+              'bldb-change-pw-item',
+              'M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z',
+              'Change Password',
+              false
+            );
+            pwItem.addEventListener('click', (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              openChangePasswordModal(root);
+            });
+            wifiRow.parentNode.insertBefore(pwItem, wifiRow.nextSibling);
+          }
+        } else {
+          const stalePw = root.querySelector ? root.querySelector('#bldb-change-pw-item') : null;
+          if (stalePw) stalePw.remove();
+        }
+
+        // 8. Simplify installing copy to "Installing"
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
         let node;
         while ((node = walker.nextNode())) {
@@ -547,20 +573,23 @@
             node.nodeValue = '';
           } else if (v.indexOf('Erase User Data') !== -1) {
             node.nodeValue = v.replace('Erase User Data', 'Erase and Install Firmware');
+          } else if (v.indexOf('Visit Device') !== -1) {
+            node.nodeValue = v.replace('Visit Device', 'Open Settings');
           }
         }
 
-        // 8. Confirm Install screen: toggle button between "Install" and "Erase & Install"
-        if (fullText.indexOf('Erase device') !== -1) {
+        // 9. Confirm Install screen: toggle button between "Install" and "Erase & Install"
+        if (isConfirmInstall) {
           const cb = allEls.find(
             (e) =>
               (e.tagName === 'INPUT' && e.type === 'checkbox') ||
+              e.tagName === 'MD-CHECKBOX' ||
               e.tagName === 'MWC-CHECKBOX' ||
               e.tagName === 'HA-CHECKBOX' ||
               e.getAttribute('role') === 'checkbox'
           );
           const installBtn = allEls.find((e) => {
-            if (!e.matches || !e.matches('mwc-button, ewt-button, button')) return false;
+            if (!e.matches || !e.matches(BTN_SELECTOR)) return false;
             const t = getElLabel(e);
             return t === 'Install' || t === 'Erase & Install';
           });
@@ -581,47 +610,53 @@
           }
         }
 
-        // 9. Erase confirmation dialog: add Cancel button
-        if (fullText.indexOf('erase all user data') !== -1) {
-          const actionBtns = allEls.filter((e) => e.matches && e.matches('mwc-button, ewt-button, button'));
-          const hasCancel = actionBtns.some((b) => getElLabel(b).toLowerCase() === 'cancel');
+        // 10. Erase confirmation dialog: add Cancel button alongside Erase action button
+        if (isEraseConfirm) {
+          const actionBtns = allEls.filter((e) => e.matches && e.matches(BTN_SELECTOR));
+          const hasCancel = actionBtns.some((b) => getElLabel(b).toLowerCase() === 'cancel') ||
+            (root.querySelector && !!root.querySelector('#bldb-erase-cancel-btn'));
           const primaryBtn = actionBtns.find((b) => {
             const t = getElLabel(b).toLowerCase();
-            return t === 'erase' || t === 'continue' || t === 'yes' || t === 'erase user data';
+            return (
+              t === 'erase and install firmware' ||
+              t === 'erase' ||
+              t === 'continue' ||
+              t === 'yes' ||
+              t === 'erase user data'
+            );
           });
           if (!hasCancel && primaryBtn && primaryBtn.parentNode) {
             const cancelBtn = document.createElement('button');
+            cancelBtn.id = 'bldb-erase-cancel-btn';
             cancelBtn.type = 'button';
-            cancelBtn.slot = 'secondaryAction';
+            cancelBtn.slot = primaryBtn.slot || 'secondaryAction';
             cancelBtn.textContent = 'Cancel';
             cancelBtn.style.cssText =
-              'margin-right:8px;padding:8px 14px;border-radius:6px;border:1px solid #dfd9c5;background:#eef0eb;color:#1f2e26;font-weight:600;font-size:0.86rem;cursor:pointer;';
+              'margin-right:10px;padding:8px 16px;border-radius:8px;border:1px solid #dfd9c5;background:#eef0eb;color:#1f2e26;font-weight:600;font-size:0.86rem;cursor:pointer;';
             cancelBtn.onclick = (ev) => {
               ev.preventDefault();
               ev.stopPropagation();
-              const dlg = allEls.find((e) => e.matches && e.matches('mwc-dialog, ha-dialog, dialog'));
+              const ewtDlg = document.querySelector('ewt-install-dialog');
+              if (ewtDlg && '_state' in ewtDlg) {
+                ewtDlg._state = 'DASHBOARD';
+                if (typeof ewtDlg.requestUpdate === 'function') ewtDlg.requestUpdate();
+                return;
+              }
+              const dlg = allEls.find((e) => e.matches && e.matches('md-dialog, mwc-dialog, ha-dialog, dialog'));
               if (dlg && typeof dlg.close === 'function') dlg.close();
+              else if (ewtDlg && typeof ewtDlg.close === 'function') ewtDlg.close();
               else if (hostDialog && hostDialog.remove) hostDialog.remove();
             };
             primaryBtn.parentNode.insertBefore(cancelBtn, primaryBtn);
           }
         }
 
-        // 10. Post-Wi-Fi Setup screen ("Device connected to the network!"):
-        //     - Rename "Visit Device" -> "Open Settings"
+        // 11. Post-Wi-Fi Setup screen ("Device connected to the network!"):
         //     - Password Protection Enabled/Disabled toggle + Username & Password fields
         //     - QR code for http://bldb.local + http://bldb.local & http://<ip> links
-        if (fullText.indexOf('Device connected to the network') !== -1) {
-          const visitLink = allEls.find((e) => {
-            const t = getElLabel(e);
-            return (e.tagName === 'A' || (e.matches && e.matches(ROW_SELECTOR))) &&
-                   (t.indexOf('Visit Device') !== -1 || t.indexOf('Open Settings') !== -1);
-          });
+        if (isNetConnected) {
           let ipUrl = '';
           if (visitLink) {
-            if (getElLabel(visitLink).indexOf('Visit Device') !== -1) {
-              setElementLabel(visitLink, 'Open Settings');
-            }
             const href = visitLink.getAttribute('href') || visitLink.href || '';
             if (href && href.startsWith('http')) {
               ipUrl = href.replace(/\/+$/, '');
