@@ -3186,7 +3186,7 @@ void finishBleConnect(unsigned long now) {
 uint8_t improvRxBuf[260];
 size_t improvRxLen = 0;
 size_t improvExpectedLen = 0;
-char serialLineBuf[64];
+char serialLineBuf[192];
 size_t serialLineLen = 0;
 bool improvProvPending = false;
 unsigned long improvProvStartMs = 0;
@@ -3372,7 +3372,8 @@ void serviceSerialAndImprov(unsigned long now) {
             if (b == '\r' || b == '\n') {
                 if (serialLineLen > 0) {
                     serialLineBuf[serialLineLen] = '\0';
-                    String cmd(serialLineBuf);
+                    String rawLine(serialLineBuf);
+                    String cmd = rawLine;
                     cmd.trim();
                     cmd.toLowerCase();
                     if (cmd == "status" || cmd == "help" || cmd == "info") {
