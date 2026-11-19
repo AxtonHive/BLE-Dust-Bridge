@@ -210,13 +210,13 @@
     async function sendSerialAuthLine(line) {
       const port = window.__bldbSerialPort;
       if (!port || !port.writable) return false;
-      for (let attempt = 0; attempt < 10 && port.writable.locked; attempt++) {
+      for (let attempt = 0; attempt < 20 && port.writable.locked; attempt++) {
         await new Promise((r) => setTimeout(r, 50));
       }
       if (port.writable.locked) return false;
       const writer = port.writable.getWriter();
       try {
-        await writer.write(new TextEncoder().encode(line + '\n'));
+        await writer.write(new TextEncoder().encode('\n' + line + '\n'));
         return true;
       } catch (_) {
         return false;
@@ -225,10 +225,97 @@
       }
     }
 
+    function buildPasswordWidgetHtml(prefix, includeQr, ipDisplay) {
+      const mdnsUrl = 'http://bldb.local';
+      const qrBlock = includeQr
+        ? `
+          <div style="border-top:1px solid #dfd9c5;padding-top:12px;margin-top:12px;text-align:center;">
+            <div style="margin-bottom:8px;">${buildQrSvg(mdnsUrl)}</div>
+            <div style="font-size:0.84rem;font-weight:700;margin-bottom:3px;">
+              <a href="${mdnsUrl}" target="_blank" rel="noopener" style="color:#283b31;text-decoration:underline;">${mdnsUrl}</a>
+            </div>
+            <div style="font-size:0.82rem;font-family:monospace;color:#5c6b63;">
+              <a id="${prefix}-ip-link" href="${ipDisplay}" target="_blank" rel="noopener" style="color:#283b31;text-decoration:underline;">${ipDisplay}</a>
+            </div>
+          </div>`
+        : '';
+
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
+          <div>
+            <div style="font-weight:700;font-size:0.9rem;color:#283b31;">Password Protection</div>
+            <div id="${prefix}-toggle-label" style="font-size:0.76rem;font-weight:600;color:#283b31;">Enabled</div>
+          </div>
+          <label style="position:relative;display:inline-flex;align-items:center;width:44px;height:24px;cursor:pointer;flex-shrink:0;">
+            <input id="${prefix}-en" type="checkbox" checked style="opacity:0;width:0;height:0;position:absolute;" />
+            <span id="${prefix}-track" style="position:absolute;inset:0;background:#283b31;border-radius:999px;transition:background 0.18s;"></span>
+            <span id="${prefix}-thumb" style="position:absolute;top:3px;left:23px;width:18px;height:18px;background:#ffffff;border-radius:50%;transition:left 0.18s;box-shadow:0 1px 3px rgba(0,0,0,0.25);"></span>
+          </label>
+        </div>
+        <div id="${prefix}-inputs" style="display:flex;flex-direction:column;gap:7px;margin-bottom:10px;transition:opacity 0.18s;">
+          <input id="${prefix}-user" type="text" value="admin" placeholder="Username" autocomplete="username" style="width:100%;padding:8px 10px;border:1px solid #dfd9c5;border-radius:6px;font-size:0.85rem;background:#ffffff;color:#1f2e26;" />
+          <input id="${prefix}-pass" type="password" placeholder="Password" autocomplete="new-password" style="width:100%;padding:8px 10px;border:1px solid #dfd9c5;border-radius:6px;font-size:0.85rem;background:#ffffff;color:#1f2e26;" />
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <button id="${prefix}-save" type="button" style="background:#283b31;color:#f7f3e3;border:none;border-radius:6px;padding:8px 14px;font-size:0.82rem;font-weight:600;cursor:pointer;">Save Password</button>
+          <span id="${prefix}-status" style="font-size:0.78rem;font-weight:600;color:#283b31;"></span>
+        </div>
+        ${qrBlock}
+      `;
+    }
+
+    function wirePasswordWidget(container, prefix) {
+      const enCb = container.querySelector('#' + prefix + '-en');
+      const toggleLabel = container.querySelector('#' + prefix + '-toggle-label');
+      const track = container.querySelector('#' + prefix + '-track');
+      const thumb = container.querySelector('#' + prefix + '-thumb');
+      const inputsWrap = container.querySelector('#' + prefix + '-inputs');
+      const userInp = container.querySelector('#' + prefix + '-user');
+      const passInp = container.querySelector('#' + prefix + '-pass');
+      const saveBtn = container.querySelector('#' + prefix + '-save');
+      const statusSpan = container.querySelector('#' + prefix + '-status');
+      if (!enCb || enCb.__wired) return;
+      enCb.__wired = true;
+
+      const syncToggle = () => {
+        const enabled = !!enCb.checked;
+        toggleLabel.textContent = enabled ? 'Enabled' : 'Disabled';
+        toggleLabel.style.color = enabled ? '#283b31' : '#5c6b63';
+        track.style.background = enabled ? '#283b31' : '#cfc8b4';
+        thumb.style.left = enabled ? '23px' : '3px';
+        userInp.disabled = !enabled;
+        passInp.disabled = !enabled;
+        inputsWrap.style.opacity = enabled ? '1' : '0.45';
+      };
+
+      enCb.addEventListener('change', syncToggle);
+      syncToggle();
+
+      saveBtn.addEventListener('click', async () => {
+        if (!enCb.checked) {
+          const ok = await sendSerialAuthLine('BLDB_SET_AUTH {"en":0}');
+          statusSpan.style.color = ok ? '#283b31' : '#b83232';
+          statusSpan.textContent = ok ? 'Password protection disabled!' : 'USB port busy or disconnected';
+          return;
+        }
+        const u = userInp.value.trim();
+        const p = passInp.value;
+        if (!u || !p) {
+          statusSpan.style.color = '#b83232';
+          statusSpan.textContent = 'Enter username & password';
+          return;
+        }
+        const payload = JSON.stringify({ en: 1, user: u, pass: p });
+        const ok = await sendSerialAuthLine('BLDB_SET_AUTH ' + payload);
+        statusSpan.style.color = ok ? '#283b31' : '#b83232';
+        statusSpan.textContent = ok ? 'Password protection enabled!' : 'USB port busy or disconnected';
+      });
+    }
+
     (function () {
       window.__bldbFlashed = false;
       const observedRoots = new WeakSet();
-      const MENU_SELECTOR = 'md-list-item, mwc-list-item, ewt-list-item, li, button, a, [role="menuitem"], [role="button"]';
+      const ROW_SELECTOR = 'ewt-icon-button, md-list-item, mwc-list-item, ewt-list-item, li, button, a, [role="menuitem"], [role="button"]';
 
       function findAllElements(root, out = []) {
         if (!root) return out;
@@ -242,7 +329,7 @@
 
       function getElLabel(el) {
         if (!el) return '';
-        const attrLbl = (typeof el.label === 'string' && el.label) || el.getAttribute('label') || '';
+        const attrLbl = (typeof el.label === 'string' && el.label) || (el.getAttribute && el.getAttribute('label')) || '';
         const txt = (el.textContent || '').trim();
         return (attrLbl || txt).trim();
       }
@@ -269,6 +356,74 @@
         }
       }
 
+      function findClickableRow(el, boundaryRoot) {
+        if (!el) return null;
+        if (el.matches && el.matches(ROW_SELECTOR)) return el;
+        let cur = el.parentElement;
+        while (cur && cur !== boundaryRoot && cur !== document.body) {
+          if (cur.matches && cur.matches(ROW_SELECTOR)) return cur;
+          cur = cur.parentElement;
+        }
+        return el;
+      }
+
+      function replaceRowIcon(rowEl, svgInnerHtml) {
+        const oldIcon = (rowEl.querySelector && rowEl.querySelector('[slot="start"], [slot="icon"], svg, mwc-icon, ha-svg-icon')) ||
+                        (rowEl.shadowRoot && rowEl.shadowRoot.querySelector('[slot="start"], [slot="icon"], svg, mwc-icon, ha-svg-icon'));
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('slot', (oldIcon && oldIcon.getAttribute('slot')) || 'start');
+        svg.setAttribute('width', '24');
+        svg.setAttribute('height', '24');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('fill', 'currentColor');
+        svg.innerHTML = svgInnerHtml;
+        if (oldIcon && oldIcon.parentNode) {
+          oldIcon.parentNode.replaceChild(svg, oldIcon);
+        } else {
+          rowEl.insertBefore(svg, rowEl.firstChild);
+        }
+      }
+
+      function openChangePasswordModal(dialogRoot) {
+        if (!dialogRoot) return;
+        const existing = dialogRoot.querySelector('#bldb-change-pw-modal');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'bldb-change-pw-modal';
+        overlay.style.cssText =
+          'position:fixed;inset:0;z-index:9999;background:rgba(24,36,30,0.62);display:flex;align-items:center;justify-content:center;padding:16px;';
+
+        const box = document.createElement('div');
+        box.style.cssText =
+          'width:100%;max-width:360px;background:#f7f3e3;border:1px solid #dfd9c5;border-radius:16px;padding:20px;box-shadow:0 16px 38px rgba(0,0,0,0.32);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#1f2e26;text-align:left;';
+
+        box.innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <div style="font-size:1.05rem;font-weight:700;color:#283b31;">Change Password</div>
+            <button id="bldb-cpw-close" type="button" style="background:transparent;border:none;font-size:1.4rem;line-height:1;color:#5c6b63;cursor:pointer;padding:0;">&times;</button>
+          </div>
+          <div style="background:#fbf9f1;border:1px solid #dfd9c5;border-radius:12px;padding:14px;">
+            ${buildPasswordWidgetHtml('bldb-cpw', false, '')}
+          </div>
+          <button id="bldb-cpw-done" type="button" style="width:100%;margin-top:12px;background:#eef0eb;border:1px solid #dfd9c5;color:#1f2e26;border-radius:8px;padding:9px;font-size:0.86rem;font-weight:600;cursor:pointer;">Back to Menu</button>
+        `;
+
+        overlay.appendChild(box);
+        dialogRoot.appendChild(overlay);
+        wirePasswordWidget(box, 'bldb-cpw');
+
+        const closeOverlay = (ev) => {
+          if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+          overlay.remove();
+        };
+        box.querySelector('#bldb-cpw-close').addEventListener('click', closeOverlay);
+        box.querySelector('#bldb-cpw-done').addEventListener('click', closeOverlay);
+        overlay.addEventListener('click', (ev) => {
+          if (ev.target === overlay) closeOverlay(ev);
+        });
+      }
+
       function sanitizeNodeTree(root, hostDialog) {
         if (!root) return;
 
@@ -278,8 +433,8 @@
         }
 
         const allEls = findAllElements(root);
-        let installItem = null;
-        let wifiItem = null;
+        let installRow = null;
+        let wifiRow = null;
 
         allEls.forEach((el) => {
           if (el.shadowRoot && !observedRoots.has(el.shadowRoot)) {
@@ -288,71 +443,100 @@
 
           const rawTxt = getElLabel(el);
 
+          // 1. Remove celebratory icon on Installation Complete modal
           if (el.children.length === 0 && (rawTxt === '🎉' || rawTxt.indexOf('\uD83C\uDF89') !== -1)) {
-            el.style.display = 'none';
+            el.style.setProperty('display', 'none', 'important');
           }
 
-          const isMenu = el.matches && el.matches(MENU_SELECTOR);
-          if (isMenu && (rawTxt.indexOf('Logs & Console') !== -1 || rawTxt.indexOf('Add to Home Assistant') !== -1)) {
-            el.style.display = 'none';
+          // 2. Completely remove "Logs & Console" and "Add to Home Assistant" everywhere
+          if (rawTxt === 'Logs & Console' || rawTxt === 'Add to Home Assistant') {
+            const row = findClickableRow(el, root);
+            if (row) row.style.setProperty('display', 'none', 'important');
           }
 
-          if (isMenu && rawTxt.indexOf('Erase User Data') !== -1) {
-            setElementLabel(el, 'Erase and Install Firmware');
+          // 3. Rename "Erase User Data" -> "Erase and Install Firmware"
+          if (rawTxt === 'Erase User Data') {
+            const row = findClickableRow(el, root);
+            setElementLabel(row || el, 'Erase and Install Firmware');
           }
 
-          if (isMenu && rawTxt.indexOf('Install BLE Dust Bridge') !== -1) {
-            installItem = el;
+          // 4. Locate "Install BLE Dust Bridge" row (present when firmware is NOT yet installed)
+          if (rawTxt.indexOf('Install BLE Dust Bridge') !== -1) {
+            const row = findClickableRow(el, root);
+            if (row) installRow = row;
           }
 
-          if (isMenu && rawTxt.indexOf('Connect to Wi-Fi') !== -1 && el.id !== 'bldb-disabled-wifi-item') {
-            wifiItem = el;
+          // 5. Locate Wi-Fi row ("Connect to Wi-Fi", "Change Wi-Fi", or "Configure Wi-Fi")
+          if (
+            (rawTxt === 'Connect to Wi-Fi' || rawTxt === 'Change Wi-Fi' || rawTxt === 'Configure Wi-Fi') &&
+            el.id !== 'bldb-disabled-wifi-item'
+          ) {
+            const row = findClickableRow(el, root);
+            if (row && row.id !== 'bldb-disabled-wifi-item') wifiRow = row;
           }
         });
 
-        const isUnflashedMenu = !!installItem && !window.__bldbFlashed && fullText.indexOf('Connected to BLE-Dust-Bridge') === -1;
+        // 6. Grey out "Configure Wi-Fi" if firmware has NOT been installed yet;
+        //    otherwise enable Wi-Fi and place "Change Password" directly underneath it.
+        const isUnflashedMenu = !!installRow && !window.__bldbFlashed && fullText.indexOf('Connected to BLE-Dust-Bridge') === -1;
         if (isUnflashedMenu) {
-          if (wifiItem) {
-            wifiItem.style.opacity = '0.42';
-            wifiItem.style.pointerEvents = 'none';
-            wifiItem.setAttribute('aria-disabled', 'true');
-            if ('disabled' in wifiItem) wifiItem.disabled = true;
-          } else if (installItem.parentNode && !installItem.parentNode.querySelector('#bldb-disabled-wifi-item')) {
-            const disabledWifi = installItem.cloneNode(true);
+          const stalePw = root.querySelector ? root.querySelector('#bldb-change-pw-item') : null;
+          if (stalePw) stalePw.remove();
+
+          if (wifiRow) {
+            setElementLabel(wifiRow, 'Configure Wi-Fi');
+            wifiRow.style.opacity = '0.4';
+            wifiRow.style.pointerEvents = 'none';
+            wifiRow.style.cursor = 'not-allowed';
+            wifiRow.setAttribute('aria-disabled', 'true');
+            if ('disabled' in wifiRow) wifiRow.disabled = true;
+          } else if (installRow.parentNode && !installRow.parentNode.querySelector('#bldb-disabled-wifi-item')) {
+            const disabledWifi = installRow.cloneNode(true);
             disabledWifi.id = 'bldb-disabled-wifi-item';
-            const oldIcon = disabledWifi.querySelector('[slot="start"], svg');
-            const wifiSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-            wifiSvg.setAttribute('slot', 'start');
-            wifiSvg.setAttribute('width', '24');
-            wifiSvg.setAttribute('height', '24');
-            wifiSvg.setAttribute('viewBox', '0 0 24 24');
-            wifiSvg.setAttribute('fill', 'currentColor');
-            wifiSvg.innerHTML = '<path d="M12 18c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm-4.9-2.3l1.4 1.4C9.4 16.4 10.6 16 12 16s2.6.4 3.5 1.1l1.4-1.4C15.6 14.6 13.9 14 12 14s-3.6.6-4.9 1.7zm-2.8-2.8l1.4 1.4C7.3 13 9.5 12 12 12s4.7 1 6.3 2.3l1.4-1.4C17.7 11.1 15 10 12 10s-5.7 1.1-7.7 2.9zM1.5 10.1l1.4 1.4C5.3 9.3 8.5 8 12 8s6.7 1.3 9.1 3.5l1.4-1.4C19.7 7.5 16 6 12 6S4.3 7.5 1.5 10.1z"/>';
-            if (oldIcon && oldIcon.parentNode) {
-              oldIcon.parentNode.replaceChild(wifiSvg, oldIcon);
-            } else {
-              disabledWifi.insertBefore(wifiSvg, disabledWifi.firstChild);
-            }
-            setElementLabel(disabledWifi, 'Connect to Wi-Fi');
+            replaceRowIcon(
+              disabledWifi,
+              '<path d="M12 18c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm-4.9-2.3l1.4 1.4C9.4 16.4 10.6 16 12 16s2.6.4 3.5 1.1l1.4-1.4C15.6 14.6 13.9 14 12 14s-3.6.6-4.9 1.7zm-2.8-2.8l1.4 1.4C7.3 13 9.5 12 12 12s4.7 1 6.3 2.3l1.4-1.4C17.7 11.1 15 10 12 10s-5.7 1.1-7.7 2.9zM1.5 10.1l1.4 1.4C5.3 9.3 8.5 8 12 8s6.7 1.3 9.1 3.5l1.4-1.4C19.7 7.5 16 6 12 6S4.3 7.5 1.5 10.1z"/>'
+            );
+            setElementLabel(disabledWifi, 'Configure Wi-Fi');
             disabledWifi.disabled = true;
             disabledWifi.setAttribute('disabled', '');
             disabledWifi.setAttribute('aria-disabled', 'true');
-            disabledWifi.style.opacity = '0.42';
+            disabledWifi.style.opacity = '0.4';
             disabledWifi.style.pointerEvents = 'none';
             disabledWifi.style.cursor = 'not-allowed';
-            installItem.parentNode.insertBefore(disabledWifi, installItem);
+            installRow.parentNode.insertBefore(disabledWifi, installRow.nextSibling);
           }
         } else {
           const staleDisabled = root.querySelector ? root.querySelector('#bldb-disabled-wifi-item') : null;
           if (staleDisabled) staleDisabled.remove();
-          if (wifiItem) {
-            wifiItem.style.opacity = '';
-            wifiItem.style.pointerEvents = '';
-            wifiItem.removeAttribute('aria-disabled');
-            if ('disabled' in wifiItem) wifiItem.disabled = false;
+
+          if (wifiRow) {
+            wifiRow.style.opacity = '';
+            wifiRow.style.pointerEvents = '';
+            wifiRow.style.cursor = '';
+            wifiRow.removeAttribute('aria-disabled');
+            if ('disabled' in wifiRow) wifiRow.disabled = false;
+
+            // Add "Change Password" directly underneath "Change Wi-Fi" / "Connect to Wi-Fi"
+            if (wifiRow.parentNode && !wifiRow.parentNode.querySelector('#bldb-change-pw-item')) {
+              const pwItem = wifiRow.cloneNode(true);
+              pwItem.id = 'bldb-change-pw-item';
+              replaceRowIcon(
+                pwItem,
+                '<path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>'
+              );
+              setElementLabel(pwItem, 'Change Password');
+              pwItem.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                openChangePasswordModal(root);
+              });
+              wifiRow.parentNode.insertBefore(pwItem, wifiRow.nextSibling);
+            }
           }
         }
 
+        // 7. Simplify installing copy to "Installing"
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
         let node;
         while ((node = walker.nextNode())) {
@@ -366,6 +550,7 @@
           }
         }
 
+        // 8. Confirm Install screen: toggle button between "Install" and "Erase & Install"
         if (fullText.indexOf('Erase device') !== -1) {
           const cb = allEls.find(
             (e) =>
@@ -396,6 +581,7 @@
           }
         }
 
+        // 9. Erase confirmation dialog: add Cancel button
         if (fullText.indexOf('erase all user data') !== -1) {
           const actionBtns = allEls.filter((e) => e.matches && e.matches('mwc-button, ewt-button, button'));
           const hasCancel = actionBtns.some((b) => getElLabel(b).toLowerCase() === 'cancel');
@@ -421,16 +607,20 @@
           }
         }
 
+        // 10. Post-Wi-Fi Setup screen ("Device connected to the network!"):
+        //     - Rename "Visit Device" -> "Open Settings"
+        //     - Password Protection Enabled/Disabled toggle + Username & Password fields
+        //     - QR code for http://bldb.local + http://bldb.local & http://<ip> links
         if (fullText.indexOf('Device connected to the network') !== -1) {
           const visitLink = allEls.find((e) => {
             const t = getElLabel(e);
-            return (e.tagName === 'A' || (e.matches && e.matches('mwc-list-item, ewt-list-item, button'))) &&
-                   (t.indexOf('Visit Device') !== -1 || t.indexOf('Go to Settings') !== -1);
+            return (e.tagName === 'A' || (e.matches && e.matches(ROW_SELECTOR))) &&
+                   (t.indexOf('Visit Device') !== -1 || t.indexOf('Open Settings') !== -1);
           });
           let ipUrl = '';
           if (visitLink) {
             if (getElLabel(visitLink).indexOf('Visit Device') !== -1) {
-              setElementLabel(visitLink, 'Go to Settings');
+              setElementLabel(visitLink, 'Open Settings');
             }
             const href = visitLink.getAttribute('href') || visitLink.href || '';
             if (href && href.startsWith('http')) {
@@ -446,77 +636,19 @@
             const panel = document.createElement('div');
             panel.id = 'bldb-post-wifi-panel';
             panel.style.cssText =
-              'margin:12px 0 6px 0;padding:14px;background:#fbf9f1;border:1px solid #dfd9c5;border-radius:12px;text-align:left;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#1f2e26;';
+              'margin:12px 0 8px 0;padding:14px;background:#fbf9f1;border:1px solid #dfd9c5;border-radius:12px;text-align:left;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#1f2e26;';
 
-            const mdnsUrl = 'http://bldb.local';
             const ipDisplay = ipUrl || 'http://192.168.4.1';
-
-            panel.innerHTML = `
-              <div style="font-weight:700;font-size:0.9rem;color:#283b31;margin-bottom:8px;">Web UI Login</div>
-              <div id="bldb-auth-inputs" style="display:flex;flex-direction:column;gap:7px;margin-bottom:8px;">
-                <input id="bldb-inst-user" type="text" value="admin" placeholder="Username" style="width:100%;padding:7px 9px;border:1px solid #dfd9c5;border-radius:6px;font-size:0.85rem;background:#ffffff;color:#1f2e26;" />
-                <input id="bldb-inst-pass" type="password" placeholder="Password" style="width:100%;padding:7px 9px;border:1px solid #dfd9c5;border-radius:6px;font-size:0.85rem;background:#ffffff;color:#1f2e26;" />
-              </div>
-              <label style="display:flex;align-items:center;gap:7px;font-size:0.82rem;color:#5c6b63;cursor:pointer;margin-bottom:9px;">
-                <input id="bldb-inst-none" type="checkbox" style="width:15px;height:15px;accent-color:#283b31;" />
-                <span>None (no login required)</span>
-              </label>
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
-                <button id="bldb-inst-save-auth" type="button" style="background:#283b31;color:#f7f3e3;border:none;border-radius:6px;padding:7px 12px;font-size:0.82rem;font-weight:600;cursor:pointer;">Save Login</button>
-                <span id="bldb-inst-auth-status" style="font-size:0.78rem;font-weight:600;color:#283b31;"></span>
-              </div>
-              <div style="border-top:1px solid #dfd9c5;padding-top:12px;text-align:center;">
-                <div style="margin-bottom:8px;">${buildQrSvg(mdnsUrl)}</div>
-                <div style="font-size:0.84rem;font-weight:700;margin-bottom:3px;">
-                  <a href="${mdnsUrl}" target="_blank" rel="noopener" style="color:#283b31;text-decoration:underline;">${mdnsUrl}</a>
-                </div>
-                <div id="bldb-ip-url-row" style="font-size:0.82rem;font-family:monospace;color:#5c6b63;">
-                  <a id="bldb-ip-url-link" href="${ipDisplay}" target="_blank" rel="noopener" style="color:#283b31;text-decoration:underline;">${ipDisplay}</a>
-                </div>
-              </div>
-            `;
+            panel.innerHTML = buildPasswordWidgetHtml('bldb-post', true, ipDisplay);
 
             if (visitLink && visitLink.parentNode) {
               visitLink.parentNode.insertBefore(panel, visitLink);
             } else {
               hostContainer.appendChild(panel);
             }
-
-            const noneCb = panel.querySelector('#bldb-inst-none');
-            const authInputs = panel.querySelector('#bldb-auth-inputs');
-            const userInp = panel.querySelector('#bldb-inst-user');
-            const passInp = panel.querySelector('#bldb-inst-pass');
-            const saveBtn = panel.querySelector('#bldb-inst-save-auth');
-            const statusSpan = panel.querySelector('#bldb-inst-auth-status');
-
-            noneCb.addEventListener('change', () => {
-              const disabled = noneCb.checked;
-              userInp.disabled = disabled;
-              passInp.disabled = disabled;
-              authInputs.style.opacity = disabled ? '0.45' : '1';
-            });
-
-            saveBtn.addEventListener('click', async () => {
-              if (noneCb.checked) {
-                const ok = await sendSerialAuthLine('BLDB_SET_AUTH {"en":0}');
-                statusSpan.style.color = ok ? '#283b31' : '#b83232';
-                statusSpan.textContent = ok ? 'Login disabled!' : 'USB port unavailable';
-                return;
-              }
-              const u = userInp.value.trim();
-              const p = passInp.value;
-              if (!u || !p) {
-                statusSpan.style.color = '#b83232';
-                statusSpan.textContent = 'Enter username & password';
-                return;
-              }
-              const payload = JSON.stringify({ en: 1, user: u, pass: p });
-              const ok = await sendSerialAuthLine('BLDB_SET_AUTH ' + payload);
-              statusSpan.style.color = ok ? '#283b31' : '#b83232';
-              statusSpan.textContent = ok ? 'Login saved!' : 'USB port unavailable';
-            });
+            wirePasswordWidget(panel, 'bldb-post');
           } else if (ipUrl) {
-            const ipLink = hostContainer.querySelector('#bldb-ip-url-link');
+            const ipLink = hostContainer.querySelector('#bldb-post-ip-link');
             if (ipLink && ipLink.textContent !== ipUrl) {
               ipLink.href = ipUrl;
               ipLink.textContent = ipUrl;
@@ -544,6 +676,17 @@
         }
       });
       bodyObserver.observe(document.body, { childList: true, subtree: true });
+
+      setInterval(() => {
+        const dlgs = document.querySelectorAll('ewt-install-dialog, mwc-dialog, md-dialog');
+        dlgs.forEach((d) => {
+          if (d.shadowRoot) {
+            attachShadowObserver(d.shadowRoot, d);
+            sanitizeNodeTree(d.shadowRoot, d);
+          }
+          sanitizeNodeTree(d, d);
+        });
+      }, 200);
     })();
   </script>
 </body>
