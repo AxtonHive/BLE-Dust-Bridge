@@ -3199,7 +3199,7 @@ void improvSendPacket(uint8_t type, const uint8_t* data, uint8_t len) {
         Serial.flush();
         Serial.setTxTimeoutMs(0);
     }
-    delay(12);
+    delay(20);
 }
 
 void improvSendState(uint8_t state) {
@@ -3254,13 +3254,16 @@ void handleImprovRpcCommand(const uint8_t* data, uint8_t len, unsigned long now)
         wifiScanInProgress = true;
         NimBLEDevice::getScan()->stop();
         esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
-        WiFi.setSleep(false);
         if (WiFi.status() != WL_CONNECTED) {
             WiFi.disconnect(false);
         }
-        WiFi.scanDelete();
         delay(30);
-        int n = WiFi.scanNetworks(false, false);
+        WiFi.scanNetworks(true, true);
+        unsigned long scanStart = millis();
+        while (WiFi.scanComplete() == WIFI_SCAN_RUNNING && elapsedMs(millis(), scanStart) < 4000UL) {
+            delay(15);
+        }
+        int n = WiFi.scanComplete();
         struct ScanNet { String ssid; int rssi; bool enc; };
         std::vector<ScanNet> nets;
         for (int i = 0; i < n; i++) {
@@ -3281,11 +3284,10 @@ void handleImprovRpcCommand(const uint8_t* data, uint8_t len, unsigned long now)
         std::sort(nets.begin(), nets.end(), [](const ScanNet& a, const ScanNet& b) { return a.rssi > b.rssi; });
         for (const auto& u : nets) {
             improvSendRpcResult(0x04, { u.ssid, String(u.rssi), u.enc ? "YES" : "NO" });
-            delay(15);
+            delay(25);
         }
         improvSendRpcResult(0x04, {});
         WiFi.scanDelete();
-        WiFi.setSleep(true);
         esp_coex_preference_set(ESP_COEX_PREFER_BT);
         wifiScanInProgress = false;
         setCoexScanner();
@@ -3451,7 +3453,7 @@ void serviceSerialAndImprov(unsigned long now) {
     }
 
     if (improvProvPending) {
-        if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == improvProvSsid) {
+        if (WiFi.status() == WL_CONNECTED) {
             improvProvPending = false;
             improvSendState(0x04);
             improvSendRpcResult(0x01, { getDeviceWebUrl() });
