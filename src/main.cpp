@@ -3452,24 +3452,13 @@ void serviceSerialAndImprov(unsigned long now) {
     if (improvProvPending) {
         if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == improvProvSsid) {
             improvProvPending = false;
-            WiFi.setSleep(true);
-            esp_coex_preference_set(ESP_COEX_PREFER_BT);
-            if (MDNS.begin(hostname)) LOGLN("[MDNS] Started: http://bldb.local");
-            if (mqtt_en && mqtt_ip.length() > 0) mqttClient.setServer(mqtt_ip.c_str(), mqtt_port);
             improvSendState(0x04);
             improvSendRpcResult(0x01, { getDeviceWebUrl() });
-            setCoexScanner();
             LOGF("[IMPROV] Wi-Fi connected! URL: %s\n", getDeviceWebUrl().c_str());
-        } else if (elapsedMs(now, improvProvStartMs) >= 16000UL) {
+        } else if (elapsedMs(now, improvProvStartMs) >= 15000UL) {
             improvProvPending = false;
-            WiFi.disconnect(false);
-            WiFi.mode(WIFI_AP_STA);
-            WiFi.softAP("BLE_Dust_Bridge");
-            WiFi.setSleep(true);
-            esp_coex_preference_set(ESP_COEX_PREFER_BT);
             improvSendError(0x03);
             improvSendState(0x02);
-            setCoexScanner();
             LOGLN("[IMPROV] Wi-Fi connection timed out.");
         }
     }
