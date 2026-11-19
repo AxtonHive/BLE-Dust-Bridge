@@ -111,6 +111,7 @@
       window.__bldbDeviceIpUrl = '';
       window.__bldbAutoClickedInstall = false;
       window.__bldbAutoClickedNext = false;
+      window.__bldbLastFlashTriggerMs = 0;
       window.__bldbLastEwtDialogRef = null;
 
       const observedRoots = new WeakSet();
@@ -136,6 +137,7 @@
         window.__bldbDeviceIpUrl = '';
         window.__bldbAutoClickedInstall = false;
         window.__bldbAutoClickedNext = false;
+        window.__bldbLastFlashTriggerMs = 0;
         window.__bldbLastEwtDialogRef = null;
         hideTopDialog();
       }
@@ -311,10 +313,30 @@
         window.__bldbWizardActive = true;
         window.__bldbWizardStep = 'STARTING_FLASH';
         window.__bldbAutoClickedNext = false;
-        // Keep #bldb-top-dialog visible in STARTING_FLASH state so the native
-        // "Confirm Installation" screen underneath is never shown to the user.
+        window.__bldbLastFlashTriggerMs = Date.now();
+        // Keep #bldb-top-dialog visible until ewt-install-dialog leaves "Confirm Installation"
         showTopScreen('STARTING_FLASH');
         triggerUnderlyingFlashInstall();
+      }
+
+      function renderAddressFooterHtml() {
+        const mdnsUrl = 'http://bldb.local';
+        const hasWifiIp = !!window.__bldbDeviceIpUrl && window.__bldbDeviceIpUrl !== 'http://192.168.4.1';
+        const plainIp = hasWifiIp
+          ? window.__bldbDeviceIpUrl.replace(/^https?:\/\//i, '')
+          : '192.168.4.1';
+        const ipHref = hasWifiIp ? window.__bldbDeviceIpUrl : 'http://192.168.4.1';
+        const ipNote = hasWifiIp
+          ? ''
+          : ' <span style="color:#5c6b63;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">(Fallback AP: BLE_Dust_Bridge)</span>';
+
+        return `
+          <div style="margin-top:14px;padding:11px 12px;background:#fbf9f1;border:1px solid #dfd9c5;border-radius:10px;font-size:0.79rem;color:#5c6b63;line-height:1.5;">
+            <div style="font-weight:700;color:#283b31;margin-bottom:3px;">Device Network Addresses</div>
+            <div>mDNS Hostname: <a href="${mdnsUrl}" target="_blank" rel="noopener" style="color:#283b31;font-weight:600;font-family:monospace;text-decoration:underline;">${mdnsUrl}</a></div>
+            <div>IP Address: <a id="bldb-mm-ip-link" href="${ipHref}" target="_blank" rel="noopener" style="color:#283b31;font-weight:600;font-family:monospace;text-decoration:underline;">${plainIp}</a>${ipNote}</div>
+          </div>
+        `;
       }
 
       function showTopScreen(mode) {
@@ -330,11 +352,9 @@
             dlg.close();
             dlg.showModal();
           }
-          const subUrl = dlg.querySelector('#bldb-setup-suburl');
-          if (subUrl) {
-            subUrl.textContent = window.__bldbDeviceIpUrl
-              ? `http://bldb.local · ${window.__bldbDeviceIpUrl}`
-              : 'http://bldb.local';
+          const footerWrap = dlg.querySelector('#bldb-mm-addr-footer');
+          if (footerWrap) {
+            footerWrap.innerHTML = renderAddressFooterHtml();
           }
           return;
         }
@@ -393,22 +413,22 @@
               <div style="font-size:1.12rem;font-weight:700;color:#283b31;">Configure Password</div>
               <button id="bldb-pw-close" type="button" style="background:transparent;border:none;font-size:1.45rem;line-height:1;color:#5c6b63;cursor:pointer;padding:0 2px;">&times;</button>
             </div>
-            <div style="font-size:0.82rem;color:#5c6b63;margin-bottom:14px;">Set a username and password for the Bridge Web UI, or toggle Password Protection off.</div>
+            <div style="font-size:0.82rem;color:#5c6b63;margin-bottom:14px;">Default is no password. Toggle Password Protection on to require a username and password for the Bridge Web UI, or click Skip to leave unchanged.</div>
             <div style="background:#fbf9f1;border:1px solid #dfd9c5;border-radius:12px;padding:14px;margin-bottom:16px;">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;">
                 <div>
                   <div style="font-weight:700;font-size:0.9rem;color:#283b31;">Password Protection</div>
-                  <div id="bldb-pw-state-lbl" style="font-size:0.76rem;font-weight:600;color:#283b31;">Enabled</div>
+                  <div id="bldb-pw-state-lbl" style="font-size:0.76rem;font-weight:600;color:#5c6b63;">Disabled (No Password)</div>
                 </div>
                 <label style="position:relative;display:inline-flex;align-items:center;width:44px;height:24px;cursor:pointer;flex-shrink:0;">
-                  <input id="bldb-pw-en" type="checkbox" checked style="opacity:0;width:0;height:0;position:absolute;" />
-                  <span id="bldb-pw-track" style="position:absolute;inset:0;background:#283b31;border-radius:999px;transition:background 0.18s;"></span>
-                  <span id="bldb-pw-thumb" style="position:absolute;top:3px;left:23px;width:18px;height:18px;background:#ffffff;border-radius:50%;transition:left 0.18s;box-shadow:0 1px 3px rgba(0,0,0,0.25);"></span>
+                  <input id="bldb-pw-en" type="checkbox" style="opacity:0;width:0;height:0;position:absolute;" />
+                  <span id="bldb-pw-track" style="position:absolute;inset:0;background:#cfc8b4;border-radius:999px;transition:background 0.18s;"></span>
+                  <span id="bldb-pw-thumb" style="position:absolute;top:3px;left:3px;width:18px;height:18px;background:#ffffff;border-radius:50%;transition:left 0.18s;box-shadow:0 1px 3px rgba(0,0,0,0.25);"></span>
                 </label>
               </div>
-              <div id="bldb-pw-fields" style="display:flex;flex-direction:column;gap:8px;transition:opacity 0.18s;">
-                <input id="bldb-pw-user" type="text" value="admin" placeholder="Username" autocomplete="username" style="width:100%;padding:9px 10px;border:1px solid #dfd9c5;border-radius:7px;font-size:0.88rem;background:#ffffff;color:#1f2e26;" />
-                <input id="bldb-pw-pass" type="password" placeholder="Password" autocomplete="new-password" style="width:100%;padding:9px 10px;border:1px solid #dfd9c5;border-radius:7px;font-size:0.88rem;background:#ffffff;color:#1f2e26;" />
+              <div id="bldb-pw-fields" style="display:flex;flex-direction:column;gap:8px;opacity:0.45;transition:opacity 0.18s;">
+                <input id="bldb-pw-user" type="text" value="admin" placeholder="Username" autocomplete="username" disabled style="width:100%;padding:9px 10px;border:1px solid #dfd9c5;border-radius:7px;font-size:0.88rem;background:#ffffff;color:#1f2e26;" />
+                <input id="bldb-pw-pass" type="password" placeholder="Password" autocomplete="new-password" disabled style="width:100%;padding:9px 10px;border:1px solid #dfd9c5;border-radius:7px;font-size:0.88rem;background:#ffffff;color:#1f2e26;" />
               </div>
               <div id="bldb-pw-err" style="display:none;margin-top:8px;font-size:0.78rem;font-weight:600;color:#b83232;"></div>
             </div>
@@ -416,6 +436,104 @@
               <button id="bldb-pw-skip" type="button" style="flex:1;padding:10px 14px;border-radius:8px;border:1px solid #dfd9c5;background:#eef0eb;color:#1f2e26;font-size:0.9rem;font-weight:600;cursor:pointer;">Skip</button>
               <button id="bldb-pw-continue" type="button" style="flex:1;padding:10px 14px;border-radius:8px;border:none;background:#283b31;color:#f7f3e3;font-size:0.9rem;font-weight:600;cursor:pointer;">Continue</button>
             </div>
+          `;
+          dlg.appendChild(card);
+          if (dlg.open) dlg.close();
+          dlg.showModal();
+
+          const enCb = card.querySelector('#bldb-pw-en');
+          const stateLbl = card.querySelector('#bldb-pw-state-lbl');
+          const track = card.querySelector('#bldb-pw-track');
+          const thumb = card.querySelector('#bldb-pw-thumb');
+          const fields = card.querySelector('#bldb-pw-fields');
+          const userInp = card.querySelector('#bldb-pw-user');
+          const passInp = card.querySelector('#bldb-pw-pass');
+          const errEl = card.querySelector('#bldb-pw-err');
+
+          const syncToggle = () => {
+            const on = !!enCb.checked;
+            stateLbl.textContent = on ? 'Enabled' : 'Disabled (No Password)';
+            stateLbl.style.color = on ? '#283b31' : '#5c6b63';
+            track.style.background = on ? '#283b31' : '#cfc8b4';
+            thumb.style.left = on ? '23px' : '3px';
+            userInp.disabled = !on;
+            passInp.disabled = !on;
+            fields.style.opacity = on ? '1' : '0.45';
+            if (!on) errEl.style.display = 'none';
+          };
+          enCb.addEventListener('change', syncToggle);
+          syncToggle();
+
+          const finishPwStep = () => {
+            const nextMode = isWizard ? 'SETUP_COMPLETE' : 'MAIN_MENU';
+            window.__bldbWizardStep = nextMode;
+            showTopScreen(nextMode);
+          };
+
+          card.querySelector('#bldb-pw-close').onclick = closeAllDialogs;
+          // Skip leaves password configuration completely unchanged and advances
+          card.querySelector('#bldb-pw-skip').onclick = finishPwStep;
+          card.querySelector('#bldb-pw-continue').onclick = async () => {
+            if (!enCb.checked) {
+              await sendSerialAuthLine('BLDB_SET_AUTH {"en":0}');
+              finishPwStep();
+              return;
+            }
+            const u = userInp.value.trim();
+            const p = passInp.value;
+            if (!u || !p) {
+              errEl.textContent = 'Enter a username and password, or leave Password Protection disabled.';
+              errEl.style.display = 'block';
+              return;
+            }
+            const payload = JSON.stringify({ en: 1, user: u, pass: p });
+            await sendSerialAuthLine('BLDB_SET_AUTH ' + payload);
+            finishPwStep();
+          };
+          return;
+        }
+
+        if (mode === 'SETUP_COMPLETE' || mode === 'MAIN_MENU') {
+          const isSetupComplete = (mode === 'SETUP_COMPLETE');
+
+          const headerBanner = isSetupComplete
+            ? `
+              <div style="background:#e3ece6;border:1px solid #9eb8a8;border-radius:12px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;gap:10px;">
+                <div style="width:28px;height:28px;border-radius:50%;background:#283b31;color:#f7f3e3;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                </div>
+                <div style="font-size:1rem;font-weight:700;color:#283b31;">Successfully set up</div>
+              </div>`
+            : `
+              <div style="margin-bottom:12px;">
+                <div style="font-size:1.15rem;font-weight:700;color:#283b31;">BLE Dust Bridge</div>
+              </div>`;
+
+          card.innerHTML = `
+            <div style="display:flex;justify-content:flex-end;margin-bottom:${isSetupComplete ? '6px' : '-26px'};">
+              <button id="bldb-mm-close" type="button" style="position:relative;z-index:2;background:transparent;border:none;font-size:1.45rem;line-height:1;color:#5c6b63;cursor:pointer;padding:0 2px;">&times;</button>
+            </div>
+            ${headerBanner}
+            <div style="display:flex;flex-direction:column;gap:8px;">
+              <button id="bldb-mm-settings" type="button" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px 14px;background:#fbf9f1;border:1px solid #dfd9c5;border-radius:10px;color:#1f2e26;font-size:0.94rem;font-weight:600;cursor:pointer;text-align:left;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#283b31" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                <span>Open Settings</span>
+              </button>
+              <button id="bldb-mm-wifi" type="button" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px 14px;background:#fbf9f1;border:1px solid #dfd9c5;border-radius:10px;color:#1f2e26;font-size:0.94rem;font-weight:600;cursor:pointer;text-align:left;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#283b31" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+                <span>Configure Wi-Fi</span>
+              </button>
+              <button id="bldb-mm-pw" type="button" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px 14px;background:#fbf9f1;border:1px solid #dfd9c5;border-radius:10px;color:#1f2e26;font-size:0.94rem;font-weight:600;cursor:pointer;text-align:left;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#283b31" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                <span>Configure Password</span>
+              </button>
+              <div style="border-top:1px solid #dfd9c5;margin:4px 0;"></div>
+              <button id="bldb-mm-erase" type="button" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px 14px;background:#f8e6e6;border:1px solid #dfb0b0;border-radius:10px;color:#b83232;font-size:0.94rem;font-weight:600;cursor:pointer;text-align:left;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#b83232" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                <span>Erase and Install Firmware</span>
+              </button>
+            </div>
+            <div id="bldb-mm-addr-footer">${renderAddressFooterHtml()}</div>
           `;
           dlg.appendChild(card);
           if (dlg.open) dlg.close();
@@ -655,32 +773,41 @@
         }
 
         // 3. STARTING_FLASH -> keep Top Layer modal covering native "Confirm Installation"
-        //    until the underlying dialog advances to the percentage ring
-        const progressRingEl = allEls.find((e) => e.tagName === 'EWT-PROGRESS-RING');
+        //    until ewt-install-dialog leaves "Confirm Installation" for the progress view
+        const stillOnConfirm = (fullText.indexOf('Confirm Installation') !== -1);
+        const isProgressView =
+          !stillOnConfirm &&
+          (fullText.indexOf('Preparing') !== -1 ||
+           fullText.indexOf('Erasing') !== -1 ||
+           fullText.indexOf('Installing') !== -1 ||
+           /\b\d{1,3}%/.test(fullText) ||
+           allEls.some((e) => e.tagName === 'EWT-PROGRESS-RING'));
+
         if (window.__bldbWizardStep === 'STARTING_FLASH') {
-          if (progressRingEl) {
+          if (isProgressView) {
             window.__bldbWizardStep = 'FLASHING';
             hideTopDialog();
           } else {
             showTopScreen('STARTING_FLASH');
-            triggerUnderlyingFlashInstall();
+            if (Date.now() - window.__bldbLastFlashTriggerMs > 450) {
+              window.__bldbLastFlashTriggerMs = Date.now();
+              triggerUnderlyingFlashInstall();
+            }
             return;
           }
         }
 
-        // 4. Flashing screen -> show ONLY the percentage circle with zero copy underneath it
-        if (progressRingEl) {
+        // 4. Flashing screen -> show circular percentage ring with "Installing..." underneath
+        if (isProgressView || window.__bldbWizardStep === 'FLASHING') {
           if (window.__bldbWizardStep !== 'FLASHING' && window.__bldbWizardStep !== 'ADVANCING_WIFI') {
             window.__bldbWizardStep = 'FLASHING';
           }
           if (window.__bldbWizardStep === 'FLASHING') {
             hideTopDialog();
           }
-          const ringSr = progressRingEl.shadowRoot;
+          let setInstallingLabel = false;
           allEls.forEach((el) => {
-            if (el === progressRingEl) return;
-            if (ringSr && ringSr.contains(el)) return;
-            if (el.contains && el.contains(progressRingEl)) return;
+            if (el.closest && el.closest('ewt-icon-button')) return;
             const tag = el.tagName;
             if (
               tag === 'P' ||
@@ -695,10 +822,17 @@
               if (
                 el.children.length === 0 &&
                 t.length > 0 &&
-                !/^\d+%$/.test(t) &&
+                !/^\d{1,3}%$/.test(t) &&
                 t !== '×'
               ) {
-                el.style.setProperty('display', 'none', 'important');
+                if (!setInstallingLabel) {
+                  setInstallingLabel = true;
+                  if (t !== 'Installing...') {
+                    el.textContent = 'Installing...';
+                  }
+                } else {
+                  el.style.setProperty('display', 'none', 'important');
+                }
               }
             }
           });
