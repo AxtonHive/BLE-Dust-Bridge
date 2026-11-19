@@ -1,0 +1,76 @@
+name: Build Firmware & Update Installer
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO & Build Firmware
+        run: |
+          pip install -U platformio
+          pio run
+
+      - name: Merge Factory Binary for Web Installer (0x0)
+        run: |
+          python3 ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 merge_bin \
+            -o bldb-factory.bin \
+            --flash_mode dio --flash_freq 80m --flash_size 8MB \
+            0x0 .pio/build/m5stack-atoms3/bootloader.bin \
+            0x8000 .pio/build/m5stack-atoms3/partitions.bin \
+            0xe000 ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
+            0x10000 .pio/build/m5stack-atoms3/firmware.bin
+
+      - name: Publish OTA & Factory Binaries to "latest" Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view latest || gh release create latest --title "Latest Firmware" --notes "Automated build from commit ${{ github.sha }}"
+          gh release upload latest .pio/build/m5stack-atoms3/firmware.bin bldb-factory.bin --clobber
+
+      - name: Assemble Web Installer Site
+        run: |
+          mkdir -p _site
+          cp installer/index.html _site/
+          cp installer/manifest.json _site/
+          cp bldb-factory.bin _site/
+
+      - name: Upload GitHub Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy Web Installer to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
