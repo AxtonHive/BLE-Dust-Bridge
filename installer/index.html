@@ -273,6 +273,8 @@
       deviceIpUrl: '',
       wifiNetworks: [],
       wifiScanning: false,
+      wifiScannedOnce: false,
+      currentScreen: '',
       confirmFromMenu: false,
       improvResolvers: []
     };
@@ -517,6 +519,8 @@
       state.deviceIpUrl = '';
       state.wifiNetworks = [];
       state.wifiScanning = false;
+      state.wifiScannedOnce = false;
+      state.currentScreen = '';
       state.confirmFromMenu = false;
       state.improvResolvers = [];
       modalOverlay.style.display = 'none';
@@ -563,16 +567,36 @@
     async function queryWifiNetworks() {
       state.wifiScanning = true;
       state.wifiNetworks = [];
-      const found = [];
-      const donePromise = waitForImprovEvent((e) => {
-        if (e.kind === 'rpc' && e.cmd === 0x04) {
-          if (e.strings.length === 0) return true;
-          const ssid = e.strings[0];
-          const rssi = parseInt(e.strings[1] || '-100', 10);
-          const locked = (e.strings[2] || 'YES').toUpperCase() === 'YES';
-          if (ssid && !found.some((x) => x.ssid === ssid)) {
-            found.push({ ssid, rssi, locked });
+      const scanOnce = async () => {
+        const found = [];
+        const donePromise = waitForImprovEvent((e) => {
+          if (e.kind === 'rpc' && e.cmd === 0x04) {
+            if (e.strings.length === 0) return true;
+            const ssid = e.strings[0];
+            const rssi = parseInt(e.strings[1] || '-100', 10);
+            const locked = (e.strings[2] || 'YES').toUpperCase() === 'YES';
+            if (ssid && !found.some((x) => x.ssid === ssid)) {
+              found.push({ ssid, rssi, locked });
+            }
           }
+          return false;
+        }, 6500);
+
+        await writeSerialBytes(buildImprovRpcPacket(0x04, []));
+        await donePromise;
+        return found;
+      };
+
+      let found = await scanOnce();
+      if (found.length === 0) {
+        await sleep(800);
+        found = await scanOnce();
+      }
+      found.sort((a, b) => b.rssi - a.rssi);
+      state.wifiNetworks = found;
+      state.wifiScanning = false;
+      state.wifiScannedOnce = true;
+    }
         }
         return false;
       }, 6500);
@@ -762,17 +786,23 @@
     }
 
     async function showConfigureWifiScreen(fromMenu = false) {
+      state.currentScreen = 'WIFI';
+      state.wifiScannedOnce = false;
       modalOverlay.style.display = 'flex';
+
       const renderWifiCard = () => {
+        if (state.currentScreen !== 'WIFI') return;
         const netHtml = state.wifiScanning
-          ? `<div style="padding:12px;text-align:center;font-size:0.83rem;color:var(--sub);">Scanning nearby Wi-Fi networks...</div>`
+          ? `<div style="padding:10px;text-align:center;font-size:0.82rem;color:var(--sub);margin-bottom:10px;border:1px dashed var(--border);border-radius:8px;background:var(--input);">Scanning nearby Wi-Fi networks...</div>`
           : (state.wifiNetworks.length > 0
               ? `<div class="net-list">${state.wifiNetworks.map((n) => `
                   <div class="net-item" data-ssid="${escHtml(n.ssid)}">
                     <span style="font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(n.ssid)}</span>
                     <span style="font-size:0.76rem;color:var(--sub);font-family:monospace;flex-shrink:0;">${n.locked ? '🔒 ' : ''}${n.rssi} dBm</span>
                   </div>`).join('')}</div>`
-              : '');
+              : (state.wifiScannedOnce
+                  ? `<div style="padding:9px 10px;text-align:center;font-size:0.8rem;color:var(--sub);margin-bottom:10px;border:1px dashed var(--border);border-radius:8px;background:var(--input);">No networks found. Click Scan Nearby to retry.</div>`
+                  : ''));
 
         modalCard.innerHTML = `
           <div class="modal-head">
@@ -783,6 +813,10 @@
             Select or enter your Wi-Fi network to connect the bridge, or click Skip to continue.
           </div>
           <div class="subbox">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;">
+              <span style="font-size:0.78rem;font-weight:700;color:var(--accent);">Nearby Networks</span>
+              <button id="bldb-wifi-scan" class="btn-secondary" type="button" style="padding:5px 10px;font-size:0.78rem;" ${state.wifiScanning ? 'disabled' : ''}>${state.wifiScanning ? 'Scanning...' : 'Scan Nearby'}</button>
+            </div>
             ${netHtml}
             <div style="display:flex;flex-direction:column;gap:8px;">
               <input id="bldb-wifi-ssid" class="inp" type="text" placeholder="Wi-Fi Network (SSID)" autocomplete="off" />
@@ -797,6 +831,7 @@
         `;
 
         modalCard.querySelector('#bldb-wifi-close').onclick = closeAndResetSession;
+        modalCard.querySelector('#bldb-wifi-scan').onclick = () => runWifiScan();
         modalCard.querySelectorAll('.net-item').forEach((row) => {
           row.onclick = () => {
             modalCard.querySelectorAll('.net-item').forEach((r) => r.classList.remove('active'));
@@ -809,11 +844,94 @@
         });
 
         const advanceAfterWifi = () => {
+          state.currentScreen = '';
           if (fromMenu) {
             showMainMenuScreen(false);
           } else {
             showConfigurePasswordScreen(false);
           }
+        };
+
+        modalCard.querySelector('#bldb-wifi-skip').onclick = advanceAfterWifi;
+        modalCard.querySelector('#bldb-wifi-continue').onclick = async () => {
+          const ssidInp = modalCard.querySelector('#bldb-wifi-ssid');
+          const passInp = modalCard.querySelector('#bldb-wifi-pass');
+          const errEl = modalCard.querySelector('#bldb-wifi-err');
+          const contBtn = modalCard.querySelector('#bldb-wifi-continue');
+          const skipBtn = modalCard.querySelector('#bldb-wifi-skip');
+          const scanBtn = modalCard.querySelector('#bldb-wifi-scan');
+
+          const ssid = ssidInp.value.trim();
+          const pass = passInp.value;
+          if (!ssid) {
+            errEl.textContent = 'Enter a Wi-Fi network name (SSID) or click Skip.';
+            errEl.style.display = 'block';
+            return;
+          }
+
+          errEl.style.display = 'none';
+          contBtn.disabled = true;
+          skipBtn.disabled = true;
+          if (scanBtn) scanBtn.disabled = true;
+          contBtn.textContent = 'Connecting...';
+
+          const ssidBytes = new TextEncoder().encode(ssid);
+          const passBytes = new TextEncoder().encode(pass);
+          const payload = new Uint8Array(2 + ssidBytes.length + passBytes.length);
+          payload[0] = ssidBytes.length;
+          payload.set(ssidBytes, 1);
+          payload[1 + ssidBytes.length] = passBytes.length;
+          payload.set(passBytes, 2 + ssidBytes.length);
+
+          const resultPromise = waitForImprovEvent(
+            (e) =>
+              (e.kind === 'state' && e.state === 0x04) ||
+              (e.kind === 'rpc' && e.cmd === 0x01 && e.strings.length > 0) ||
+              e.kind === 'error',
+            17000
+          );
+
+          await writeSerialBytes(buildImprovRpcPacket(0x01, payload));
+          const res = await resultPromise;
+
+          if (res && res.kind !== 'error') {
+            if (!state.deviceIpUrl) {
+              await writeSerialBytes(buildImprovRpcPacket(0x02, []));
+              await waitForImprovEvent((e) => e.kind === 'rpc' && e.cmd === 0x02, 500);
+            }
+            advanceAfterWifi();
+          } else {
+            contBtn.disabled = false;
+            skipBtn.disabled = false;
+            if (scanBtn) scanBtn.disabled = false;
+            contBtn.textContent = 'Continue';
+            errEl.textContent = 'Could not connect to "' + ssid + '". Check password or click Skip.';
+            errEl.style.display = 'block';
+          }
+        };
+      };
+
+      const runWifiScan = async () => {
+        if (state.wifiScanning) return;
+        const curSsid = modalCard.querySelector('#bldb-wifi-ssid') ? modalCard.querySelector('#bldb-wifi-ssid').value : '';
+        const curPass = modalCard.querySelector('#bldb-wifi-pass') ? modalCard.querySelector('#bldb-wifi-pass').value : '';
+        state.wifiScanning = true;
+        renderWifiCard();
+        if (modalCard.querySelector('#bldb-wifi-ssid')) modalCard.querySelector('#bldb-wifi-ssid').value = curSsid;
+        if (modalCard.querySelector('#bldb-wifi-pass')) modalCard.querySelector('#bldb-wifi-pass').value = curPass;
+
+        await queryWifiNetworks();
+
+        if (state.currentScreen === 'WIFI' && (!modalCard.querySelector('#bldb-wifi-continue') || !modalCard.querySelector('#bldb-wifi-continue').disabled)) {
+          renderWifiCard();
+          if (modalCard.querySelector('#bldb-wifi-ssid')) modalCard.querySelector('#bldb-wifi-ssid').value = curSsid;
+          if (modalCard.querySelector('#bldb-wifi-pass')) modalCard.querySelector('#bldb-wifi-pass').value = curPass;
+        }
+      };
+
+      renderWifiCard();
+      await runWifiScan();
+    }
         };
 
         modalCard.querySelector('#bldb-wifi-skip').onclick = advanceAfterWifi;
