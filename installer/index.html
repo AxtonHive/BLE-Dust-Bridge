@@ -226,8 +226,9 @@
     }
 
     (function () {
+      window.__bldbFlashed = false;
       const observedRoots = new WeakSet();
-      const autoAdvancedDialogs = new WeakSet();
+      const MENU_SELECTOR = 'md-list-item, mwc-list-item, ewt-list-item, li, button, a, [role="menuitem"], [role="button"]';
 
       function findAllElements(root, out = []) {
         if (!root) return out;
@@ -271,7 +272,15 @@
       function sanitizeNodeTree(root, hostDialog) {
         if (!root) return;
 
+        const fullText = (root.textContent || '');
+        if (fullText.indexOf('Connected to BLE-Dust-Bridge') !== -1 || fullText.indexOf('Installation complete') !== -1) {
+          window.__bldbFlashed = true;
+        }
+
         const allEls = findAllElements(root);
+        let installItem = null;
+        let wifiItem = null;
+
         allEls.forEach((el) => {
           if (el.shadowRoot && !observedRoots.has(el.shadowRoot)) {
             attachShadowObserver(el.shadowRoot, hostDialog || el);
@@ -283,24 +292,66 @@
             el.style.display = 'none';
           }
 
-          if (
-            (el.matches && el.matches('mwc-list-item, ewt-list-item, li, button, a, [role="menuitem"]')) &&
-            (rawTxt.indexOf('Logs & Console') !== -1 || rawTxt.indexOf('Add to Home Assistant') !== -1)
-          ) {
+          const isMenu = el.matches && el.matches(MENU_SELECTOR);
+          if (isMenu && (rawTxt.indexOf('Logs & Console') !== -1 || rawTxt.indexOf('Add to Home Assistant') !== -1)) {
             el.style.display = 'none';
           }
 
-          if (
-            (el.matches && el.matches('mwc-list-item, ewt-list-item, li, button, a, [role="menuitem"]')) &&
-            rawTxt.indexOf('Install BLE Dust Bridge') !== -1
-          ) {
-            const dlgKey = hostDialog || root;
-            if (!autoAdvancedDialogs.has(dlgKey)) {
-              autoAdvancedDialogs.add(dlgKey);
-              setTimeout(() => el.click(), 0);
-            }
+          if (isMenu && rawTxt.indexOf('Erase User Data') !== -1) {
+            setElementLabel(el, 'Erase and Install Firmware');
+          }
+
+          if (isMenu && rawTxt.indexOf('Install BLE Dust Bridge') !== -1) {
+            installItem = el;
+          }
+
+          if (isMenu && rawTxt.indexOf('Connect to Wi-Fi') !== -1 && el.id !== 'bldb-disabled-wifi-item') {
+            wifiItem = el;
           }
         });
+
+        const isUnflashedMenu = !!installItem && !window.__bldbFlashed && fullText.indexOf('Connected to BLE-Dust-Bridge') === -1;
+        if (isUnflashedMenu) {
+          if (wifiItem) {
+            wifiItem.style.opacity = '0.42';
+            wifiItem.style.pointerEvents = 'none';
+            wifiItem.setAttribute('aria-disabled', 'true');
+            if ('disabled' in wifiItem) wifiItem.disabled = true;
+          } else if (installItem.parentNode && !installItem.parentNode.querySelector('#bldb-disabled-wifi-item')) {
+            const disabledWifi = installItem.cloneNode(true);
+            disabledWifi.id = 'bldb-disabled-wifi-item';
+            const oldIcon = disabledWifi.querySelector('[slot="start"], svg');
+            const wifiSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            wifiSvg.setAttribute('slot', 'start');
+            wifiSvg.setAttribute('width', '24');
+            wifiSvg.setAttribute('height', '24');
+            wifiSvg.setAttribute('viewBox', '0 0 24 24');
+            wifiSvg.setAttribute('fill', 'currentColor');
+            wifiSvg.innerHTML = '<path d="M12 18c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm-4.9-2.3l1.4 1.4C9.4 16.4 10.6 16 12 16s2.6.4 3.5 1.1l1.4-1.4C15.6 14.6 13.9 14 12 14s-3.6.6-4.9 1.7zm-2.8-2.8l1.4 1.4C7.3 13 9.5 12 12 12s4.7 1 6.3 2.3l1.4-1.4C17.7 11.1 15 10 12 10s-5.7 1.1-7.7 2.9zM1.5 10.1l1.4 1.4C5.3 9.3 8.5 8 12 8s6.7 1.3 9.1 3.5l1.4-1.4C19.7 7.5 16 6 12 6S4.3 7.5 1.5 10.1z"/>';
+            if (oldIcon && oldIcon.parentNode) {
+              oldIcon.parentNode.replaceChild(wifiSvg, oldIcon);
+            } else {
+              disabledWifi.insertBefore(wifiSvg, disabledWifi.firstChild);
+            }
+            setElementLabel(disabledWifi, 'Connect to Wi-Fi');
+            disabledWifi.disabled = true;
+            disabledWifi.setAttribute('disabled', '');
+            disabledWifi.setAttribute('aria-disabled', 'true');
+            disabledWifi.style.opacity = '0.42';
+            disabledWifi.style.pointerEvents = 'none';
+            disabledWifi.style.cursor = 'not-allowed';
+            installItem.parentNode.insertBefore(disabledWifi, installItem);
+          }
+        } else {
+          const staleDisabled = root.querySelector ? root.querySelector('#bldb-disabled-wifi-item') : null;
+          if (staleDisabled) staleDisabled.remove();
+          if (wifiItem) {
+            wifiItem.style.opacity = '';
+            wifiItem.style.pointerEvents = '';
+            wifiItem.removeAttribute('aria-disabled');
+            if ('disabled' in wifiItem) wifiItem.disabled = false;
+          }
+        }
 
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
         let node;
@@ -310,10 +361,10 @@
             node.nodeValue = 'Installing';
           } else if (v.indexOf('Keep this page visible for fastest installation') !== -1) {
             node.nodeValue = '';
+          } else if (v.indexOf('Erase User Data') !== -1) {
+            node.nodeValue = v.replace('Erase User Data', 'Erase and Install Firmware');
           }
         }
-
-        const fullText = (root.textContent || '');
 
         if (fullText.indexOf('Erase device') !== -1) {
           const cb = allEls.find(
