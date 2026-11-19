@@ -3254,16 +3254,22 @@ void handleImprovRpcCommand(const uint8_t* data, uint8_t len, unsigned long now)
         wifiScanInProgress = true;
         NimBLEDevice::getScan()->stop();
         esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+        
+        if (WiFi.getMode() == WIFI_OFF) {
+            WiFi.mode(WIFI_STA);
+        }
         if (WiFi.status() != WL_CONNECTED) {
-            WiFi.disconnect(false);
+            WiFi.disconnect(false, true);
         }
-        delay(30);
-        WiFi.scanNetworks(true, true);
-        unsigned long scanStart = millis();
-        while (WiFi.scanComplete() == WIFI_SCAN_RUNNING && elapsedMs(millis(), scanStart) < 4000UL) {
-            delay(15);
+        delay(100);
+        
+        int n = WiFi.scanNetworks(false, true);
+        if (n < 0) {
+            LOGLN("[IMPROV] Wi-Fi scan failed, retrying...");
+            delay(250);
+            n = WiFi.scanNetworks(false, true);
         }
-        int n = WiFi.scanComplete();
+        
         struct ScanNet { String ssid; int rssi; bool enc; };
         std::vector<ScanNet> nets;
         for (int i = 0; i < n; i++) {
@@ -3458,7 +3464,7 @@ void serviceSerialAndImprov(unsigned long now) {
             improvSendState(0x04);
             improvSendRpcResult(0x01, { getDeviceWebUrl() });
             LOGF("[IMPROV] Wi-Fi connected! URL: %s\n", getDeviceWebUrl().c_str());
-        } else if (elapsedMs(now, improvProvStartMs) >= 15000UL) {
+        } else if (elapsedMs(now, improvProvStartMs) >= 25000UL) {
             improvProvPending = false;
             improvSendError(0x03);
             improvSendState(0x02);

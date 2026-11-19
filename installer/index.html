@@ -580,7 +580,7 @@
             }
           }
           return false;
-        }, 7000);
+        }, 15000);
 
         await writeSerialBytes(buildImprovRpcPacket(0x04, []));
         await donePromise;
@@ -878,7 +878,7 @@
               (e.kind === 'state' && e.state === 0x04) ||
               (e.kind === 'rpc' && e.cmd === 0x01 && e.strings.length > 0) ||
               e.kind === 'error',
-            18000
+            28000
           );
 
           await writeSerialBytes(buildImprovRpcPacket(0x01, payload));
