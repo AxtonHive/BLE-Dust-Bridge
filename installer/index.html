@@ -107,6 +107,7 @@
       window.__bldbDeviceIpUrl = '';
       window.__bldbAutoClickedInstall = false;
       window.__bldbAutoClickedNext = false;
+      window.__bldbLastEwtDialogRef = null;
 
       const observedRoots = new WeakSet();
       const BTN_SELECTOR = 'md-text-button, md-filled-button, md-outlined-button, mwc-button, ewt-button, button, [role="button"]';
@@ -121,6 +122,7 @@
         if (dlg && dlg.open) {
           dlg.close();
         }
+        if (dlg) dlg.dataset.mode = '';
       }
 
       function resetSessionState() {
@@ -130,6 +132,7 @@
         window.__bldbDeviceIpUrl = '';
         window.__bldbAutoClickedInstall = false;
         window.__bldbAutoClickedNext = false;
+        window.__bldbLastEwtDialogRef = null;
         hideTopDialog();
       }
 
@@ -297,7 +300,15 @@
         const dlg = getTopDialog();
         if (!dlg) return;
 
+        const currentEwt = document.querySelector('ewt-install-dialog');
+        const ewtChanged = (currentEwt && window.__bldbLastEwtDialogRef !== currentEwt);
+        if (currentEwt) window.__bldbLastEwtDialogRef = currentEwt;
+
         if (dlg.open && dlg.dataset.mode === mode) {
+          if (ewtChanged) {
+            dlg.close();
+            dlg.showModal();
+          }
           const subUrl = dlg.querySelector('#bldb-setup-suburl');
           if (subUrl) {
             subUrl.textContent = window.__bldbDeviceIpUrl
@@ -599,17 +610,17 @@
           return;
         }
 
-        // 3. Flashing screen -> show ONLY the percentage circle with NO copy underneath it
-        const hasProgressRing = allEls.some(
-          (e) =>
-            e.tagName === 'EWT-PROGRESS-RING' ||
-            e.tagName === 'MD-CIRCULAR-PROGRESS' ||
-            e.tagName === 'MWC-CIRCULAR-PROGRESS' ||
-            (e.className && typeof e.className === 'string' && e.className.indexOf('progress') !== -1)
-        );
-        if (window.__bldbWizardStep === 'FLASHING' || hasProgressRing) {
+        // 3. Flashing screen -> once the percentage ring appears, hide copy underneath it
+        //    (never strip text on "Connecting" or "Preparing installation" so those screens never go blank)
+        const progressRingEl = allEls.find((e) => e.tagName === 'EWT-PROGRESS-RING');
+        if (window.__bldbWizardStep === 'FLASHING') {
           hideTopDialog();
+        }
+        if (progressRingEl) {
+          hideTopDialog();
+          const ringSr = progressRingEl.shadowRoot;
           allEls.forEach((el) => {
+            if (ringSr && (el === progressRingEl || ringSr.contains(el))) return;
             const tag = el.tagName;
             if (tag === 'P' || tag === 'SPAN' || tag === 'DIV' || tag === 'EWT-PAGE-MESSAGE') {
               const t = (el.textContent || '').trim();
@@ -620,16 +631,6 @@
                 t !== '×'
               ) {
                 el.style.setProperty('display', 'none', 'important');
-              }
-            }
-          });
-          roots.forEach((r) => {
-            const walker = document.createTreeWalker(r, NodeFilter.SHOW_TEXT, null);
-            let n;
-            while ((n = walker.nextNode())) {
-              const v = (n.nodeValue || '').trim();
-              if (v.length > 0 && !/^\d+%$/.test(v) && v !== '×') {
-                n.nodeValue = '';
               }
             }
           });
