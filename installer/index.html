@@ -294,14 +294,14 @@
     function buildImprovRpcPacket(cmd, payloadBytes) {
       const dataLen = 2 + payloadBytes.length;
       const pkt = new Uint8Array(10 + dataLen);
-      pkt[0] = 0x49; // I
-      pkt[1] = 0x4d; // M
-      pkt[2] = 0x50; // P
-      pkt[3] = 0x52; // R
-      pkt[4] = 0x4f; // O
-      pkt[5] = 0x56; // V
-      pkt[6] = 0x01; // Version
-      pkt[7] = 0x03; // TYPE_RPC
+      pkt[0] = 0x49;
+      pkt[1] = 0x4d;
+      pkt[2] = 0x50;
+      pkt[3] = 0x52;
+      pkt[4] = 0x4f;
+      pkt[5] = 0x56;
+      pkt[6] = 0x01;
+      pkt[7] = 0x03;
       pkt[8] = dataLen;
       pkt[9] = cmd;
       pkt[10] = payloadBytes.length;
@@ -596,16 +596,6 @@
       state.wifiNetworks = found;
       state.wifiScanning = false;
       state.wifiScannedOnce = true;
-    }
-        }
-        return false;
-      }, 6500);
-
-      await writeSerialBytes(buildImprovRpcPacket(0x04, []));
-      await donePromise;
-      found.sort((a, b) => b.rssi - a.rssi);
-      state.wifiNetworks = found;
-      state.wifiScanning = false;
     }
 
     function renderAddressFooterHtml() {
@@ -932,74 +922,6 @@
       renderWifiCard();
       await runWifiScan();
     }
-        };
-
-        modalCard.querySelector('#bldb-wifi-skip').onclick = advanceAfterWifi;
-        modalCard.querySelector('#bldb-wifi-continue').onclick = async () => {
-          const ssidInp = modalCard.querySelector('#bldb-wifi-ssid');
-          const passInp = modalCard.querySelector('#bldb-wifi-pass');
-          const errEl = modalCard.querySelector('#bldb-wifi-err');
-          const contBtn = modalCard.querySelector('#bldb-wifi-continue');
-          const skipBtn = modalCard.querySelector('#bldb-wifi-skip');
-
-          const ssid = ssidInp.value.trim();
-          const pass = passInp.value;
-          if (!ssid) {
-            errEl.textContent = 'Enter a Wi-Fi network name (SSID) or click Skip.';
-            errEl.style.display = 'block';
-            return;
-          }
-
-          errEl.style.display = 'none';
-          contBtn.disabled = true;
-          skipBtn.disabled = true;
-          contBtn.textContent = 'Connecting...';
-
-          const ssidBytes = new TextEncoder().encode(ssid);
-          const passBytes = new TextEncoder().encode(pass);
-          const payload = new Uint8Array(2 + ssidBytes.length + passBytes.length);
-          payload[0] = ssidBytes.length;
-          payload.set(ssidBytes, 1);
-          payload[1 + ssidBytes.length] = passBytes.length;
-          payload.set(passBytes, 2 + ssidBytes.length);
-
-          const resultPromise = waitForImprovEvent(
-            (e) =>
-              (e.kind === 'state' && e.state === 0x04) ||
-              (e.kind === 'rpc' && e.cmd === 0x01 && e.strings.length > 0) ||
-              e.kind === 'error',
-            17000
-          );
-
-          await writeSerialBytes(buildImprovRpcPacket(0x01, payload));
-          const res = await resultPromise;
-
-          if (res && res.kind !== 'error') {
-            if (!state.deviceIpUrl) {
-              await writeSerialBytes(buildImprovRpcPacket(0x02, []));
-              await waitForImprovEvent((e) => e.kind === 'rpc' && e.cmd === 0x02, 500);
-            }
-            advanceAfterWifi();
-          } else {
-            contBtn.disabled = false;
-            skipBtn.disabled = false;
-            contBtn.textContent = 'Continue';
-            errEl.textContent = 'Could not connect to "' + ssid + '". Check password or click Skip.';
-            errEl.style.display = 'block';
-          }
-        };
-      };
-
-      renderWifiCard();
-      await queryWifiNetworks();
-      const curSsid = modalCard.querySelector('#bldb-wifi-ssid') ? modalCard.querySelector('#bldb-wifi-ssid').value : '';
-      const curPass = modalCard.querySelector('#bldb-wifi-pass') ? modalCard.querySelector('#bldb-wifi-pass').value : '';
-      if (modalCard.querySelector('#bldb-wifi-continue') && !modalCard.querySelector('#bldb-wifi-continue').disabled) {
-        renderWifiCard();
-        if (modalCard.querySelector('#bldb-wifi-ssid')) modalCard.querySelector('#bldb-wifi-ssid').value = curSsid;
-        if (modalCard.querySelector('#bldb-wifi-pass')) modalCard.querySelector('#bldb-wifi-pass').value = curPass;
-      }
-    }
 
     function showConfigurePasswordScreen(fromMenu = false) {
       modalOverlay.style.display = 'flex';
@@ -1067,10 +989,7 @@
       };
 
       modalCard.querySelector('#bldb-pw-close').onclick = closeAndResetSession;
-      modalCard.querySelector('#bldb-pw-skip').onclick = async () => {
-        if (!fromMenu) {
-          await sendSerialLine('BLDB_SET_AUTH {"en":0}');
-        }
+      modalCard.querySelector('#bldb-pw-skip').onclick = () => {
         advanceAfterPassword();
       };
       modalCard.querySelector('#bldb-pw-continue').onclick = async () => {
