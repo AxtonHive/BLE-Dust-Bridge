@@ -19,6 +19,7 @@ SET_LOOP_TASK_STACK_SIZE(16384);
 extern "C" bool btInUse() { return true; }
 extern "C" bool bleInUse() { return true; }
 
+// M5Stack AtomS3 Lite (ESP32-S3) built-in front button & WS2812 RGB LED
 #define BTN_ATOM_GPIO 41
 #define RGB_LED_GPIO  35
 
@@ -71,7 +72,7 @@ String mqtt_pass = "";
 String mqttClientId = "BLDB_000000";
 
 #ifndef DEFAULT_AUTH_EN
-#define DEFAULT_AUTH_EN 0
+#define DEFAULT_AUTH_EN 1
 #endif
 #ifndef DEFAULT_AUTH_USER
 #define DEFAULT_AUTH_USER "admin"
@@ -314,9 +315,12 @@ void resetExtractorTelemetry() {
 }
 
 uint8_t inferRandomAddrType(const String& macStr, uint8_t currentType) {
+    // Never overwrite a known BLE address type (0 = Public, 1 = Random) from NimBLE
     if (currentType == 0 || currentType == 1) return currentType;
     if (macStr.length() >= 2) {
         uint8_t firstByte = (uint8_t)strtoul(macStr.substring(0, 2).c_str(), nullptr, 16);
+        // Only static random addresses (top two bits = 11 -> 0xC0) can be inferred from MAC;
+        // 0x40..0x7F includes IEEE public OUIs such as Texas Instruments (78:C5:E5).
         if ((firstByte & 0xC0) == 0xC0) return 1;
     }
     return 0;
@@ -594,6 +598,9 @@ void pruneStaleBleEntries(unsigned long now) {
     }
 }
 
+// ============================================================================
+// Streamlined One-Way Monitoring-Only MQTT Telemetry (Topic Root: BLE_DB/#)
+// ============================================================================
 void mqttPublish(const String& topic, const String& payload, bool retained = false) {
     if (mqtt_en && mqttClient.connected()) {
         mqttClient.publish(topic.c_str(), payload.c_str(), retained);
@@ -1589,10 +1596,9 @@ void evaluateMotorDemand() {
 }
 
 extern std::atomic<bool> gattBtnTaskRunning;
-extern bool improvProvPending;
 
 void setCoexScanner() {
-    if (extConnTaskRunning.load() || gattBtnTaskRunning.load() || wifiScanInProgress || improvProvPending || Update.isRunning()) return;
+    if (extConnTaskRunning.load() || gattBtnTaskRunning.load() || wifiScanInProgress || Update.isRunning()) return;
     NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
     NimBLEScan* pScan = NimBLEDevice::getScan();
     static bool scannerConfigured = false;
@@ -2115,7 +2121,7 @@ void startGattButtonConnect(const String& macStr, uint8_t addrType, uint8_t bTyp
             char evictedMac[18] = {0};
             portENTER_CRITICAL(&gattSlotMux);
             if (gattSlots[slotIdx].inUse && gattSlots[slotIdx].mac[0] != '\0' &&
-                strcasecmp(gattSlots[slotIdx].mac, macStr.c_str()) == 0) {
+                strcasecmp(gattSlots[slotIdx].mac, macStr.c_str()) != 0) {
                 strncpy(evictedMac, gattSlots[slotIdx].mac, sizeof(evictedMac) - 1);
             }
             portEXIT_CRITICAL(&gattSlotMux);
@@ -2138,6 +2144,7 @@ void startGattButtonConnect(const String& macStr, uint8_t addrType, uint8_t bTyp
 
     addrType = inferRandomAddrType(macStr, addrType);
 
+    // Pause continuous BLE scanning so the single 2.4 GHz radio can establish the GATT link cleanly
     NimBLEDevice::getScan()->stop();
 
     GattBtnSlot& s = gattSlots[slotIdx];
@@ -2159,6 +2166,7 @@ void startGattButtonConnect(const String& macStr, uint8_t addrType, uint8_t bTyp
     if (!s.client) {
         s.client = NimBLEDevice::createClient();
         s.client->setClientCallbacks(&gattBtnClientCB, false);
+        // Allow 4-event peripheral latency so idle GATT switches free ~80% of radio slots for the extractor & scanner
         s.client->setConnectionParams(24, 40, 4, 400);
         s.client->setConnectTimeout(1800);
     }
@@ -2299,6 +2307,7 @@ void finishGattButtonConnect(unsigned long now) {
             s.pendingPressEdges = s.pendingPressEdges - 1;
             handedOffImmediately = true;
         } else {
+            // Tap #1 already pressed and released before GATT subscribed; close Tap #1 now so Tap #2 is never swallowed
             wakeTapAlreadyReleased = true;
         }
         s.wakePreTriggered = false;
@@ -2381,7 +2390,7 @@ void serviceGattButton(unsigned long now) {
     if (gattBtnTaskDone.exchange(false)) {
         finishGattButtonConnect(now);
     }
-    if (!requestConnect && !wifiScanInProgress && !improvProvPending && connState != STATE_CONNECTING && !extConnTaskRunning.load() && !gattBtnTaskRunning.load() && elapsedMs(now, gattBtnLastTryMs) >= 150UL) {
+    if (!requestConnect && !wifiScanInProgress && connState != STATE_CONNECTING && !extConnTaskRunning.load() && !gattBtnTaskRunning.load() && elapsedMs(now, gattBtnLastTryMs) >= 150UL) {
         for (int i = 0; i < MAX_GATT_PENDING; i++) {
             if (gattPending[i].active) {
                 GattPendingReq req = gattPending[i]; gattPending[i].active = false;
@@ -2506,6 +2515,9 @@ void serviceGattButton(unsigned long now) {
     }
 }
 
+// ============================================================================
+// Core 0 BLE Scan Callback (Zero Heap Allocation on Hot Path)
+// ============================================================================
 class ScanCallbacks : public NimBLEScanCallbacks {
     static bool strStartsWithCI(const char* str, const char* prefix) {
         if (!str || !prefix) return false;
@@ -2561,6 +2573,7 @@ class ScanCallbacks : public NimBLEScanCallbacks {
         bool isConnectable = (advType == 0 || advType == 1);
         bool hasFlags06 = false;
         if (advType == 1) {
+            // Connectable directed reconnect packet (ADV_DIRECT_IND) emitted by HID switches (e.g. PTT-Z01) on wakeup
             isGattBtnAdv = true;
         }
 
@@ -2637,6 +2650,7 @@ class ScanCallbacks : public NimBLEScanCallbacks {
                             }
                         }
                     } else if (svcUuid16 == 0xFE3A) {
+                        // Festool CT-F I remote button press burst (e.g. MAN button: 05 16 3a fe 03 00)
                         isFestoolSvc = true;
                         hasFe3aSvc = true;
                         isBurstBtnAdv = true;
@@ -2646,6 +2660,7 @@ class ScanCallbacks : public NimBLEScanCallbacks {
                         hasBtnSvc = true;
                         isConnectable = true;
                     } else if (svcUuid16 == 0xFCD2) {
+                        // BTHome v2: only classify as a button if object ID 0x3A (button event) is present
                         for (size_t k = 3; k + 1 < fDataLen; k++) {
                             if (fData[k] == 0x3A) {
                                 isBurstBtnAdv = true;
@@ -2675,6 +2690,7 @@ class ScanCallbacks : public NimBLEScanCallbacks {
                     } else if (!isFestoolMfg && !isShellyPlug && fDataLen >= 3) {
                         uint16_t mfgId = (uint16_t)fData[0] | ((uint16_t)fData[1] << 8);
                         if (mfgId == 0x000D && fDataLen >= 4 && fDataLen <= 6) {
+                            // Texas Instruments CC254x/CC2640 momentary PTT burst payload
                             isBurstBtnAdv = true;
                         }
                         parsedBtnSeq = (uint8_t)fData[fDataLen - 1];
@@ -2869,6 +2885,8 @@ void processSingleScanEvent(const ScanEvent& ev, unsigned long now) {
             if (!needSaveMonitored) needSaveMonitoredAtMs = now;
             needSaveMonitored = true;
         }
+        // GATT by exception: if an unbranded button was added passively on Packet #1
+        // and subsequent packets prove it is GATT-only (no burst packets), promote automatically
         if (mon->btnType > 0 && !mon->isGatt && !mon->canAdv && knownGattOnly) {
             mon->isGatt = true;
             mon->canGatt = true;
@@ -2922,6 +2940,7 @@ void processSingleScanEvent(const ScanEvent& ev, unsigned long now) {
                 }
             } else if (!monConfiguring && !isScanRsp) {
                 if (parsedState == -2) {
+                    // CT-F I remotes are strictly ON/OFF via MAN button; ignore Bluetooth pairing button packets
                 } else if (parsedState == 0) {
                     if (mon->btnPhase == BTN_HELD) onButtonRelease(addr, ev.ts);
                 } else {
@@ -3161,6 +3180,9 @@ void finishBleConnect(unsigned long now) {
     initialTelemDone = false; telemPollRequested = false; telemAwaitingReply = false;
 }
 
+// ============================================================================
+// USB Serial Console & Improv Wi-Fi Serial Provisioning (ESP Web Tools)
+// ============================================================================
 uint8_t improvRxBuf[260];
 size_t improvRxLen = 0;
 size_t improvExpectedLen = 0;
@@ -3187,19 +3209,12 @@ void improvSendPacket(uint8_t type, const uint8_t* data, uint8_t len) {
     for (size_t i = 0; i < idx; i++) csum = (uint8_t)(csum + pkt[i]);
     pkt[idx++] = csum;
     pkt[idx++] = 0x0A;
-    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        Serial.setTxTimeoutMs(50);
+    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         Serial.write(pkt, idx);
-        Serial.flush();
-        Serial.setTxTimeoutMs(0);
         xSemaphoreGive(logMutex);
     } else {
-        Serial.setTxTimeoutMs(50);
         Serial.write(pkt, idx);
-        Serial.flush();
-        Serial.setTxTimeoutMs(0);
     }
-    delay(20);
 }
 
 void improvSendState(uint8_t state) {
@@ -3235,7 +3250,7 @@ String getDeviceWebUrl() {
 void handleImprovRpcCommand(const uint8_t* data, uint8_t len, unsigned long now) {
     if (len < 1) return;
     uint8_t cmd = data[0];
-    if (cmd == 0x02) {
+    if (cmd == 0x02) { // GET_CURRENT_STATE
         if (improvProvPending) {
             improvSendState(0x03);
         } else if (WiFi.status() == WL_CONNECTED) {
@@ -3244,32 +3259,20 @@ void handleImprovRpcCommand(const uint8_t* data, uint8_t len, unsigned long now)
         } else {
             improvSendState(0x02);
         }
-    } else if (cmd == 0x03) {
+    } else if (cmd == 0x03) { // GET_DEVICE_INFO
         improvSendRpcResult(0x03, { "BLE Dust Bridge", "1.0.0", "ESP32-S3", "BLE-Dust-Bridge" });
-    } else if (cmd == 0x04) {
+    } else if (cmd == 0x04) { // GET_WIFI_NETWORKS
         if (extConnTaskRunning.load() || gattBtnTaskRunning.load() || connState == STATE_CONNECTING) {
             improvSendRpcResult(0x04, {});
             return;
         }
         wifiScanInProgress = true;
         NimBLEDevice::getScan()->stop();
-        esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
-        
-        if (WiFi.getMode() == WIFI_OFF) {
-            WiFi.mode(WIFI_STA);
-        }
         if (WiFi.status() != WL_CONNECTED) {
-            WiFi.disconnect(false, true);
+            WiFi.disconnect(false);
         }
-        delay(100);
-        
+        delay(20);
         int n = WiFi.scanNetworks(false, true);
-        if (n < 0) {
-            LOGLN("[IMPROV] Wi-Fi scan failed, retrying...");
-            delay(250);
-            n = WiFi.scanNetworks(false, true);
-        }
-        
         struct ScanNet { String ssid; int rssi; bool enc; };
         std::vector<ScanNet> nets;
         for (int i = 0; i < n; i++) {
@@ -3290,14 +3293,12 @@ void handleImprovRpcCommand(const uint8_t* data, uint8_t len, unsigned long now)
         std::sort(nets.begin(), nets.end(), [](const ScanNet& a, const ScanNet& b) { return a.rssi > b.rssi; });
         for (const auto& u : nets) {
             improvSendRpcResult(0x04, { u.ssid, String(u.rssi), u.enc ? "YES" : "NO" });
-            delay(25);
         }
         improvSendRpcResult(0x04, {});
         WiFi.scanDelete();
-        esp_coex_preference_set(ESP_COEX_PREFER_BT);
         wifiScanInProgress = false;
         setCoexScanner();
-    } else if (cmd == 0x01) {
+    } else if (cmd == 0x01) { // SEND_WIFI_SETTINGS
         if (len < 4) {
             improvSendError(0x02);
             return;
@@ -3338,15 +3339,11 @@ void handleImprovRpcCommand(const uint8_t* data, uint8_t len, unsigned long now)
         improvSendState(0x03);
         LOGF("[IMPROV] Provisioning Wi-Fi SSID: %s...\n", ssid.c_str());
 
-        NimBLEDevice::getScan()->stop();
-        esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
-        WiFi.setSleep(false);
-        if (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) {
-            WiFi.softAPdisconnect(true);
-            WiFi.mode(WIFI_STA);
+        if (WiFi.getMode() == WIFI_AP) {
+            WiFi.mode(WIFI_AP_STA);
         }
-        WiFi.disconnect(false, true);
-        delay(60);
+        WiFi.disconnect(false);
+        delay(30);
         WiFi.begin(ssid.c_str(), pass.c_str());
     }
 }
@@ -3459,12 +3456,12 @@ void serviceSerialAndImprov(unsigned long now) {
     }
 
     if (improvProvPending) {
-        if (WiFi.status() == WL_CONNECTED) {
+        if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == improvProvSsid) {
             improvProvPending = false;
             improvSendState(0x04);
             improvSendRpcResult(0x01, { getDeviceWebUrl() });
             LOGF("[IMPROV] Wi-Fi connected! URL: %s\n", getDeviceWebUrl().c_str());
-        } else if (elapsedMs(now, improvProvStartMs) >= 25000UL) {
+        } else if (elapsedMs(now, improvProvStartMs) >= 15000UL) {
             improvProvPending = false;
             improvSendError(0x03);
             improvSendState(0x02);
@@ -3596,6 +3593,7 @@ void buildStatusJson(String& out) {
             return bleList[a].lastSeen > bleList[b].lastSeen;
         });
         unpinnedIndices.resize(MAX_DISCOVERED_JSON);
+        // Restore stable discovery order so rows never jump as packets arrive
         std::sort(unpinnedIndices.begin(), unpinnedIndices.end());
     }
     for (size_t idx : unpinnedIndices) {
@@ -5499,7 +5497,7 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(false, true);
     delay(50);
-    WiFi.setSleep(false);
+    WiFi.setSleep(WIFI_PS_NONE);
     WiFi.setHostname(hostname);
     WiFi.setAutoReconnect(false);
     bool connected = false;
@@ -5518,7 +5516,7 @@ void setup() {
         }
         if (WiFi.status() == WL_CONNECTED) {
             connected = true;
-            WiFi.setSleep(true);
+            WiFi.setSleep(WIFI_PS_MIN_MODEM);
             LOGF("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
             break;
         }
@@ -5534,7 +5532,8 @@ void setup() {
         if (MDNS.begin(hostname)) LOGLN("[MDNS] Started: http://bldb.local");
         if (mqtt_en && mqtt_ip.length() > 0) mqttClient.setServer(mqtt_ip.c_str(), mqtt_port);
     }
-    WiFi.setSleep(true);
+    // ESP32-S3 Wi-Fi/BLE coexistence requires modem sleep enabled before NimBLEDevice::init()
+    WiFi.setSleep(WIFI_PS_MIN_MODEM);
     ledBootMode = false;
     updateStatusLed(millis());
 
@@ -5831,7 +5830,11 @@ void setup() {
             WiFi.disconnect(false);
         }
         delay(20);
-        WiFi.scanNetworks(true, true);
+        int n = WiFi.scanNetworks(false, true);
+        if (n == -1) {
+            delay(250);
+            n = WiFi.scanNetworks(false, true);
+        }
         unsigned long scanStart = millis();
         while (WiFi.scanComplete() == WIFI_SCAN_RUNNING && elapsedMs(millis(), scanStart) < 4000UL) {
             unsigned long tNow = millis();
@@ -6114,6 +6117,7 @@ void setup() {
             if (btnType > 0) {
                 canAdvInit = bleCanAdv || argCanAdv || isLegacyRemote || raw.startsWith("ADV");
                 canGattInit = isLegacyRemote ? false : (bleCanGatt || argCanGatt || raw.startsWith("GATT"));
+                // Passive-first: default to passive ADV whenever supported; use GATT only when GATT-required
                 if (canAdvInit) {
                     isGattInit = false;
                     raw = "ADV:STREAM";
@@ -6416,6 +6420,7 @@ void loop() {
         }
     }
 
+    // M5Stack AtomS3 Lite single front button (GPIO 41): 10s hold = factory reset
     bool btnAtomLow = (digitalRead(BTN_ATOM_GPIO) == LOW);
     static bool prevAtomLow = false;
     static unsigned long atomPressStartMs = 0;
