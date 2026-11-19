@@ -36,12 +36,18 @@ jobs:
         run: |
           ESPTOOL_PY=$(find ~/.platformio/packages/tool-esptoolpy -name "esptool.py" | head -n 1)
           mkdir -p installer
-          cp .pio/build/*/firmware.bin firmware.bin
+          FIRMWARE_BIN=$(find .pio/build -name "firmware.bin" | grep -i "esp32s3" | head -n 1)
+          if [ -z "$FIRMWARE_BIN" ]; then FIRMWARE_BIN=$(find .pio/build -name "firmware.bin" | head -n 1); fi
+          cp "$FIRMWARE_BIN" firmware.bin
+          
+          BOOTLOADER_BIN=$(dirname "$FIRMWARE_BIN")/bootloader.bin
+          PARTITIONS_BIN=$(dirname "$FIRMWARE_BIN")/partitions.bin
+          
           python "$ESPTOOL_PY" --chip esp32s3 merge_bin -o installer/bldb-factory.bin \
             --flash_mode dio --flash_freq 80m --flash_size 8MB \
-            0x0 .pio/build/*/bootloader.bin \
-            0x8000 .pio/build/*/partitions.bin \
-            0x10000 .pio/build/*/firmware.bin
+            0x0 "$BOOTLOADER_BIN" \
+            0x8000 "$PARTITIONS_BIN" \
+            0x10000 firmware.bin
 
       - name: Update Latest GitHub Release
         uses: softprops/action-gh-release@v2

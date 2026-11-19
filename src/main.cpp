@@ -3281,6 +3281,7 @@ void handleImprovRpcCommand(const uint8_t* data, uint8_t len, unsigned long now)
         std::sort(nets.begin(), nets.end(), [](const ScanNet& a, const ScanNet& b) { return a.rssi > b.rssi; });
         for (const auto& u : nets) {
             improvSendRpcResult(0x04, { u.ssid, String(u.rssi), u.enc ? "YES" : "NO" });
+            delay(15);
         }
         improvSendRpcResult(0x04, {});
         WiFi.scanDelete();
