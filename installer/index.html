@@ -1,22 +1,137 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BLE Dust Bridge · Web Installer</title>
-<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
-<style>
-  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #283b31; color: #1f2e26; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 16px; }
-  .card { max-width: 420px; width: 100%; background: #f7f3e3; border: 1px solid #dfd9c5; border-radius: 14px; padding: 28px 24px; text-align: center; box-shadow: 0 12px 30px rgba(0,0,0,0.28); }
-  h1 { margin: 0 0 8px 0; font-size: 1.35rem; color: #283b31; }
-  p { margin: 0 0 20px 0; font-size: 0.9rem; color: #5c6b63; line-height: 1.45; }
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BLE Dust Bridge · Web Installer</title>
+  <script>
+    // Ensure ESP32-S3 native USB CDC asserts DTR when ESP Web Tools opens Improv / Logs & Console
+    (function () {
+      if (typeof SerialPort !== 'undefined' && SerialPort.prototype && SerialPort.prototype.open) {
+        const origOpen = SerialPort.prototype.open;
+        SerialPort.prototype.open = async function (options) {
+          const res = await origOpen.apply(this, arguments);
+          try {
+            await this.setSignals({ dataTerminalReady: true, requestToSend: false });
+          } catch (_) {}
+          return res;
+        };
+      }
+    })();
+  </script>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: #283b31;
+      color: #1f2e26;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .card {
+      width: 100%;
+      max-width: 440px;
+      background: #f7f3e3;
+      border: 1px solid #dfd9c5;
+      border-radius: 16px;
+      padding: 28px 24px;
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+      text-align: center;
+    }
+    h1 {
+      margin: 0 0 8px 0;
+      font-size: 1.4rem;
+      color: #283b31;
+    }
+    p {
+      margin: 0 0 22px 0;
+      font-size: 0.92rem;
+      color: #5c6b63;
+      line-height: 1.5;
+    }
+    esp-web-install-button {
+      --esp-tools-button-color: #283b31;
+      --esp-tools-button-text-color: #f7f3e3;
+      --esp-tools-button-border-radius: 8px;
+    }
+    .note {
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid #dfd9c5;
+      font-size: 0.8rem;
+      color: #5c6b63;
+      line-height: 1.45;
+    }
+    .note strong { color: #1f2e26; }
+  </style>
 </head>
 <body>
   <div class="card">
-    <h1>BLE Dust Bridge Installer</h1>
-    <p>Connect your M5Stack AtomS3 Lite via USB-C using Chrome or Edge to install the latest firmware.</p>
-    <esp-web-install-button manifest="./manifest.json"></esp-web-install-button>
+    <h1>BLE Dust Bridge</h1>
+    <p>Connect your M5Stack AtomS3 Lite via USB-C using Chrome, Brave or Edge to install firmware.</p>
+    <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+    <div class="note">
+      After installation completes, click <strong>Next</strong> to configure your Wi-Fi network over USB or view live device logs.<br>
+      Fallback AP: <strong>BLE_Dust_Bridge</strong> (<code>192.168.4.1</code>)
+    </div>
   </div>
+  <script>
+    (function () {
+      const observedRoots = new WeakSet();
+
+      function sanitizeNodeTree(root) {
+        if (!root) return;
+
+        // 1. Remove celebratory party-popper icon on Installation Complete modal
+        const candidates = root.querySelectorAll ? root.querySelectorAll('*') : [];
+        candidates.forEach((el) => {
+          const txt = (el.textContent || '').trim();
+          if (el.children.length === 0 && (txt === '🎉' || txt.indexOf('\uD83C\uDF89') !== -1)) {
+            el.style.display = 'none';
+          }
+          if (el.shadowRoot && !observedRoots.has(el.shadowRoot)) {
+            attachShadowObserver(el.shadowRoot);
+          }
+        });
+
+        // 2. Simplify installing progress message to simply "Installing"
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+        let node;
+        while ((node = walker.nextNode())) {
+          const v = node.nodeValue || '';
+          if (v.indexOf('This will take 2 minutes') !== -1) {
+            node.nodeValue = 'Installing';
+          } else if (v.indexOf('Keep this page visible for fastest installation') !== -1) {
+            node.nodeValue = '';
+          }
+        }
+      }
+
+      function attachShadowObserver(shadowRoot) {
+        if (!shadowRoot || observedRoots.has(shadowRoot)) return;
+        observedRoots.add(shadowRoot);
+        sanitizeNodeTree(shadowRoot);
+        const mo = new MutationObserver(() => sanitizeNodeTree(shadowRoot));
+        mo.observe(shadowRoot, { childList: true, subtree: true, characterData: true });
+      }
+
+      const bodyObserver = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          for (const node of m.addedNodes) {
+            if (node && node.nodeType === 1) {
+              if (node.shadowRoot) attachShadowObserver(node.shadowRoot);
+              sanitizeNodeTree(node);
+            }
+          }
+        }
+      });
+      bodyObserver.observe(document.body, { childList: true, subtree: true });
+    })();
+  </script>
 </body>
 </html>

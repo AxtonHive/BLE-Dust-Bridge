@@ -358,7 +358,7 @@ enum BtnNormPhase { BTN_IDLE = 0, BTN_HELD, BTN_WAIT_TAP };
 struct MonitoredDevice {
     String address; String name; String advName; uint8_t speed; uint8_t btnType; String activeRaw;
     bool customNamed; bool toolActive; unsigned long toolLastSeen;
-    bool isGatt; bool gattReady; unsigned long configuringUntilMs;
+    bool isGatt; bool gattReady;
     bool toggleActive; unsigned long toggleActivatedMs;
     bool isHose; bool canAdv; bool canGatt;
     uint32_t matNum; uint8_t devCat;
@@ -383,12 +383,12 @@ struct MonitoredDevice {
     MonitoredDevice() = default;
     MonitoredDevice(const String& addr, const String& nm, const String& advNm, uint8_t spd, uint8_t bt,
                     const String& raw, bool cn, bool tAct, unsigned long tSeen, bool gatt, bool gReady,
-                    unsigned long cfgUntil, bool togAct, unsigned long togMs, bool hose, bool cAdv,
+                    bool togAct, unsigned long togMs, bool hose, bool cAdv,
                     uint32_t mat, uint8_t cat, uint16_t wThr, int32_t lWatts,
                     bool cGatt = false, uint8_t aType = 255, bool pBcn = false)
         : address(addr), name(nm), advName(advNm), speed(spd), btnType(bt), activeRaw(raw),
           customNamed(cn), toolActive(tAct), toolLastSeen(tSeen), isGatt(gatt), gattReady(gReady),
-          configuringUntilMs(cfgUntil), toggleActive(togAct), toggleActivatedMs(togMs), isHose(hose),
+          toggleActive(togAct), toggleActivatedMs(togMs), isHose(hose),
           canAdv(cAdv), canGatt(cGatt || gatt), matNum(mat), devCat(cat), wattsThr(wThr), lastWatts(lWatts),
           addrType(aType), periodicBeacon(pBcn) {}
 };
@@ -446,13 +446,9 @@ String lookupFestoolModelByTnr(uint32_t tnr) {
     }
 }
 
-inline bool isMonitoredConfiguring(MonitoredDevice& m, unsigned long now) {
-    if (m.isGatt && !m.gattReady) return true;
-    if (m.configuringUntilMs > 0) {
-        if (now < m.configuringUntilMs) return true;
-        m.configuringUntilMs = 0;
-    }
-    return false;
+inline bool isMonitoredConfiguring(const MonitoredDevice& m, unsigned long now = 0) {
+    (void)now;
+    return (m.isGatt && !m.gattReady);
 }
 
 struct BleEntry {
@@ -1409,7 +1405,7 @@ void loadMonitoredFromNvs() {
                 hose = false;
             }
         }
-        monitoredList.push_back({mac, nm, advNm, spd, bt, raw, cn, false, 0, gatt, gReady, 0, false, 0, hose, cAdv, mat, cat, wThr, -1, cGatt, aType, pBcn});
+        monitoredList.push_back({mac, nm, advNm, spd, bt, raw, cn, false, 0, gatt, gReady, false, 0, hose, cAdv, mat, cat, wThr, -1, cGatt, aType, pBcn});
     }
     refreshMonMacCache();
 }
@@ -1602,7 +1598,7 @@ void evaluateMotorDemand() {
 extern std::atomic<bool> gattBtnTaskRunning;
 
 void setCoexScanner() {
-    if (extConnTaskRunning.load() || gattBtnTaskRunning.load() || wifiScanInProgress) return;
+    if (extConnTaskRunning.load() || gattBtnTaskRunning.load() || wifiScanInProgress || Update.isRunning()) return;
     NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
     NimBLEScan* pScan = NimBLEDevice::getScan();
     static bool scannerConfigured = false;
@@ -1921,20 +1917,29 @@ class ClientCallbacks : public NimBLEClientCallbacks {
 
 static const int MAX_GATT_BTN_SLOTS = 2;
 struct GattBtnSlot {
-    NimBLEClient* client; bool inUse; volatile bool connected; bool connecting;
-    volatile uint32_t connGen;
-    char mac[18];
-    volatile bool pressed; volatile uint8_t pendingPressEdges; volatile bool gotAnyNotify; volatile bool releaseNow;
-    bool wakePreTriggered;
-    volatile unsigned long lastActivityMs; volatile unsigned long lastPressEdgeMs; unsigned long connectedAtMs; unsigned long lastRssiMs;
-    char lastHex[48]; volatile bool rxLogPending; volatile bool rxLogPressed; volatile bool sleepDiscLogPending; volatile int lastDiscReason;
+    NimBLEClient* client = nullptr;
+    bool inUse = false;
+    volatile bool connected = false;
+    bool connecting = false;
+    volatile uint32_t connGen = 0;
+    char mac[18] = {0};
+    volatile bool pressed = false;
+    volatile uint8_t pendingPressEdges = 0;
+    volatile bool gotAnyNotify = false;
+    volatile bool releaseNow = false;
+    bool wakePreTriggered = false;
+    volatile unsigned long lastActivityMs = 0;
+    volatile unsigned long lastPressEdgeMs = 0;
+    unsigned long connectedAtMs = 0;
+    unsigned long lastRssiMs = 0;
+    char lastHex[48] = {0};
+    volatile bool rxLogPending = false;
+    volatile bool rxLogPressed = false;
+    volatile bool sleepDiscLogPending = false;
 };
 portMUX_TYPE gattSlotMux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t globalGattConnGen = 1;
-GattBtnSlot gattSlots[MAX_GATT_BTN_SLOTS] = {
-    {nullptr, false, false, false, 0, {0}, false, 0, false, false, false, 0, 0, 0, 0, {0}, false, false, false, 0},
-    {nullptr, false, false, false, 0, {0}, false, 0, false, false, false, 0, 0, 0, 0, {0}, false, false, false, 0}
-};
+GattBtnSlot gattSlots[MAX_GATT_BTN_SLOTS];
 
 struct GattConnTaskParams {
     int slotIdx;
@@ -1948,8 +1953,6 @@ std::atomic<bool> gattBtnTaskDone{false};
 std::atomic<bool> gattBtnTaskOk{false};
 int gattBtnTaskSlotIdx = -1;
 uint32_t gattBtnTaskConnGen = 0;
-String gattBtnTaskMac = "";
-uint8_t gattBtnTaskAddrType = 0;
 
 static const int MAX_GATT_PENDING = 4;
 struct GattPendingReq { bool active; String mac; uint8_t addrType; uint8_t btnType; uint8_t speed; bool wakePreTrig; };
@@ -2062,6 +2065,7 @@ class GattBtnClientCallbacks : public NimBLEClientCallbacks {
         }
     }
     void onDisconnect(NimBLEClient* pC, int reason) override {
+        (void)reason;
         int idx = findGattSlotByClient(pC);
         if (idx >= 0 && pC) {
             GattBtnSlot& s = gattSlots[idx];
@@ -2070,7 +2074,6 @@ class GattBtnClientCallbacks : public NimBLEClientCallbacks {
             if (s.inUse && s.mac[0] != '\0' && strcasecmp(s.mac, peerStr.c_str()) == 0) {
                 s.connected = false;
                 s.connecting = false;
-                s.lastDiscReason = reason;
                 if (s.pressed) { s.pressed = false; s.releaseNow = true; }
                 s.sleepDiscLogPending = true;
             }
@@ -2325,7 +2328,6 @@ void finishGattButtonConnect(unsigned long now) {
             m.isGatt = true;
             m.canGatt = true;
             m.gattReady = true;
-            m.configuringUntilMs = 0;
             if (wasInitialPair) {
                 saveNvsNeeded = true;
                 m.waitReleaseAfterPair = alreadyPressed;
@@ -2480,7 +2482,6 @@ void serviceGattButton(unsigned long now) {
             continue;
         }
 
-        uint8_t liveBtnType = monPtr->btnType;
         uint8_t liveSpeed = monPtr->speed;
         if (s.wakePreTriggered && edges > 0) {
             edges--;
@@ -2722,7 +2723,6 @@ class ScanCallbacks : public NimBLEScanCallbacks {
         if (isFestoolRemote) {
             isBurstBtnAdv = true;
             isConnectable = false;
-            // Bluetooth pairing burst (Flags=0x05 + 0xFE39 UUID without 0xFE3A) cycles speed +20% in passive mode
             if (!hasFe3aSvc && parsedState == -1) parsedState = -2;
         }
 
@@ -2893,7 +2893,6 @@ void processSingleScanEvent(const ScanEvent& ev, unsigned long now) {
             mon->activeRaw = "GATT:FFE0/HID";
             if (!isGattMacConnectedOrBusy(addr)) {
                 mon->gattReady = false;
-                mon->configuringUntilMs = now + 500UL;
             }
             if (!needSaveMonitored) needSaveMonitoredAtMs = now;
             needSaveMonitored = true;
@@ -3179,6 +3178,262 @@ void finishBleConnect(unsigned long now) {
     postConnectActionPending = true;
     postConnectActionAtMs = now + 60UL;
     initialTelemDone = false; telemPollRequested = false; telemAwaitingReply = false;
+}
+
+// ============================================================================
+// USB Serial Console & Improv Wi-Fi Serial Provisioning (ESP Web Tools)
+// ============================================================================
+uint8_t improvRxBuf[260];
+size_t improvRxLen = 0;
+size_t improvExpectedLen = 0;
+char serialLineBuf[64];
+size_t serialLineLen = 0;
+bool improvProvPending = false;
+unsigned long improvProvStartMs = 0;
+String improvProvSsid = "";
+String improvProvPass = "";
+
+void improvSendPacket(uint8_t type, const uint8_t* data, uint8_t len) {
+    uint8_t pkt[264];
+    size_t idx = 0;
+    pkt[idx++] = 'I'; pkt[idx++] = 'M'; pkt[idx++] = 'P';
+    pkt[idx++] = 'R'; pkt[idx++] = 'O'; pkt[idx++] = 'V';
+    pkt[idx++] = 0x01;
+    pkt[idx++] = type;
+    pkt[idx++] = len;
+    if (len > 0 && data) {
+        memcpy(pkt + idx, data, len);
+        idx += len;
+    }
+    uint8_t csum = 0;
+    for (size_t i = 0; i < idx; i++) csum = (uint8_t)(csum + pkt[i]);
+    pkt[idx++] = csum;
+    pkt[idx++] = 0x0A;
+    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        Serial.write(pkt, idx);
+        xSemaphoreGive(logMutex);
+    } else {
+        Serial.write(pkt, idx);
+    }
+}
+
+void improvSendState(uint8_t state) {
+    improvSendPacket(0x01, &state, 1);
+}
+
+void improvSendError(uint8_t err) {
+    improvSendPacket(0x02, &err, 1);
+}
+
+void improvSendRpcResult(uint8_t cmd, const std::vector<String>& strings) {
+    uint8_t buf[240];
+    size_t pos = 2;
+    for (const auto& s : strings) {
+        uint8_t sl = (uint8_t)(s.length() > 64 ? 64 : s.length());
+        if (pos + 1 + sl >= sizeof(buf)) break;
+        buf[pos++] = sl;
+        memcpy(buf + pos, s.c_str(), sl);
+        pos += sl;
+    }
+    buf[0] = cmd;
+    buf[1] = (uint8_t)(pos - 2);
+    improvSendPacket(0x04, buf, (uint8_t)pos);
+}
+
+String getDeviceWebUrl() {
+    if (WiFi.status() == WL_CONNECTED) {
+        return "http://" + WiFi.localIP().toString() + "/";
+    }
+    return "http://192.168.4.1/";
+}
+
+void handleImprovRpcCommand(const uint8_t* data, uint8_t len, unsigned long now) {
+    if (len < 1) return;
+    uint8_t cmd = data[0];
+    if (cmd == 0x02) { // GET_CURRENT_STATE
+        if (improvProvPending) {
+            improvSendState(0x03);
+        } else if (WiFi.status() == WL_CONNECTED) {
+            improvSendState(0x04);
+            improvSendRpcResult(0x02, { getDeviceWebUrl() });
+        } else {
+            improvSendState(0x02);
+        }
+    } else if (cmd == 0x03) { // GET_DEVICE_INFO
+        improvSendRpcResult(0x03, { "BLE Dust Bridge", "1.0.0", "ESP32-S3", "BLE-Dust-Bridge" });
+    } else if (cmd == 0x04) { // GET_WIFI_NETWORKS
+        if (extConnTaskRunning.load() || gattBtnTaskRunning.load() || connState == STATE_CONNECTING) {
+            improvSendRpcResult(0x04, {});
+            return;
+        }
+        wifiScanInProgress = true;
+        NimBLEDevice::getScan()->stop();
+        if (WiFi.status() != WL_CONNECTED) {
+            WiFi.disconnect(false);
+        }
+        delay(20);
+        int n = WiFi.scanNetworks(false, true);
+        struct ScanNet { String ssid; int rssi; bool enc; };
+        std::vector<ScanNet> nets;
+        for (int i = 0; i < n; i++) {
+            String ssid = WiFi.SSID(i);
+            if (ssid.length() == 0) continue;
+            int rssi = WiFi.RSSI(i);
+            bool enc = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
+            bool found = false;
+            for (auto& u : nets) {
+                if (u.ssid == ssid) {
+                    if (rssi > u.rssi) { u.rssi = rssi; u.enc = enc; }
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) nets.push_back({ssid, rssi, enc});
+        }
+        std::sort(nets.begin(), nets.end(), [](const ScanNet& a, const ScanNet& b) { return a.rssi > b.rssi; });
+        for (const auto& u : nets) {
+            improvSendRpcResult(0x04, { u.ssid, String(u.rssi), u.enc ? "YES" : "NO" });
+        }
+        improvSendRpcResult(0x04, {});
+        WiFi.scanDelete();
+        wifiScanInProgress = false;
+        setCoexScanner();
+    } else if (cmd == 0x01) { // SEND_WIFI_SETTINGS
+        if (len < 4) {
+            improvSendError(0x02);
+            return;
+        }
+        uint8_t ssidLen = data[2];
+        if (3 + ssidLen >= len) {
+            improvSendError(0x02);
+            return;
+        }
+        String ssid = "";
+        for (uint8_t i = 0; i < ssidLen; i++) ssid += (char)data[3 + i];
+        uint8_t passLen = data[3 + ssidLen];
+        if (4 + ssidLen + passLen > len) {
+            improvSendError(0x02);
+            return;
+        }
+        String pass = "";
+        for (uint8_t i = 0; i < passLen; i++) pass += (char)data[4 + ssidLen + i];
+        ssid.trim();
+        if (ssid.length() == 0) {
+            improvSendError(0x02);
+            return;
+        }
+
+        for (auto it = wifiList.begin(); it != wifiList.end(); ) {
+            if (it->ssid.equalsIgnoreCase(ssid)) it = wifiList.erase(it);
+            else ++it;
+        }
+        wifiList.insert(wifiList.begin(), {ssid, pass});
+        if (wifiList.size() > 5) wifiList.resize(5);
+        bgWifiIdx = 0;
+        saveWifiListToNvs();
+
+        improvProvSsid = ssid;
+        improvProvPass = pass;
+        improvProvPending = true;
+        improvProvStartMs = now;
+        improvSendState(0x03);
+        LOGF("[IMPROV] Provisioning Wi-Fi SSID: %s...\n", ssid.c_str());
+
+        if (WiFi.getMode() == WIFI_AP) {
+            WiFi.mode(WIFI_AP_STA);
+        }
+        WiFi.disconnect(false);
+        delay(30);
+        WiFi.begin(ssid.c_str(), pass.c_str());
+    }
+}
+
+void printSerialStatusBanner() {
+    String ipStr = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
+    const char* modeStr = (WiFi.status() == WL_CONNECTED) ? "STA" : "AP (BLE_Dust_Bridge)";
+    LOGF("[BLDB] Console Ready | Wi-Fi: %s (%s) | BLE MAC: %s | Extractor: %s\n",
+         modeStr,
+         ipStr.c_str(),
+         NimBLEDevice::getAddress().toString().c_str(),
+         pairedMac.length() > 0 ? pairedMac.c_str() : "UNPAIRED");
+}
+
+void serviceSerialAndImprov(unsigned long now) {
+    static bool prevSerialConnected = false;
+    bool serialConnected = (bool)Serial;
+    if (serialConnected && !prevSerialConnected) {
+        printSerialStatusBanner();
+    }
+    prevSerialConnected = serialConnected;
+
+    while (Serial.available() > 0) {
+        uint8_t b = (uint8_t)Serial.read();
+        if (improvRxLen == 0 && b != 'I') {
+            if (b == '\r' || b == '\n') {
+                if (serialLineLen > 0) {
+                    serialLineBuf[serialLineLen] = '\0';
+                    String cmd(serialLineBuf);
+                    cmd.trim();
+                    cmd.toLowerCase();
+                    if (cmd == "status" || cmd == "help" || cmd == "info") {
+                        printSerialStatusBanner();
+                    }
+                    serialLineLen = 0;
+                } else if (b == '\n') {
+                    printSerialStatusBanner();
+                }
+            } else if (b >= 32 && b < 127 && serialLineLen + 1 < sizeof(serialLineBuf)) {
+                serialLineBuf[serialLineLen++] = (char)b;
+            }
+            continue;
+        }
+
+        const char magic[6] = {'I', 'M', 'P', 'R', 'O', 'V'};
+        if (improvRxLen < 6) {
+            if (b == (uint8_t)magic[improvRxLen]) {
+                improvRxBuf[improvRxLen++] = b;
+            } else {
+                improvRxLen = 0;
+            }
+            continue;
+        }
+
+        improvRxBuf[improvRxLen++] = b;
+        if (improvRxLen == 9) {
+            improvExpectedLen = 10 + (size_t)improvRxBuf[8];
+            if (improvExpectedLen > sizeof(improvRxBuf)) {
+                improvRxLen = 0;
+                improvExpectedLen = 0;
+            }
+        }
+        if (improvExpectedLen > 0 && improvRxLen >= improvExpectedLen) {
+            uint8_t csum = 0;
+            for (size_t i = 0; i < improvExpectedLen - 1; i++) {
+                csum = (uint8_t)(csum + improvRxBuf[i]);
+            }
+            if (csum == improvRxBuf[improvExpectedLen - 1] && improvRxBuf[6] == 0x01 && improvRxBuf[7] == 0x03) {
+                handleImprovRpcCommand(improvRxBuf + 9, improvRxBuf[8], now);
+            } else if (csum != improvRxBuf[improvExpectedLen - 1]) {
+                improvSendError(0x01);
+            }
+            improvRxLen = 0;
+            improvExpectedLen = 0;
+        }
+    }
+
+    if (improvProvPending) {
+        if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == improvProvSsid) {
+            improvProvPending = false;
+            improvSendState(0x04);
+            improvSendRpcResult(0x01, { getDeviceWebUrl() });
+            LOGF("[IMPROV] Wi-Fi connected! URL: %s\n", getDeviceWebUrl().c_str());
+        } else if (elapsedMs(now, improvProvStartMs) >= 15000UL) {
+            improvProvPending = false;
+            improvSendError(0x03);
+            improvSendState(0x02);
+            LOGLN("[IMPROV] Wi-Fi connection timed out.");
+        }
+    }
 }
 
 void buildStatusJson(String& out) {
@@ -5736,7 +5991,6 @@ void setup() {
                             if (i.canAdv) i.periodicBeacon = false;
                             i.activeRaw = "GATT:FFE0/HID";
                             i.gattReady = i.gattReady || isGattMacConnectedOrBusy(m);
-                            i.configuringUntilMs = i.gattReady ? 0 : (millis() + 500UL);
                             shouldConnectGatt = !i.gattReady;
                             bType = i.btnType;
                             spd = i.speed;
@@ -5749,13 +6003,11 @@ void setup() {
                             if (i.canAdv) {
                                 i.isGatt = false;
                                 i.gattReady = true;
-                                i.configuringUntilMs = 0;
                                 i.activeRaw = "ADV:STREAM";
                                 shouldDisconnectGatt = true;
                                 LOGF("[PRIMARY ROLE] %s -> Primary Switch OFF (returned to passive ADV)\n", m.c_str());
                             } else {
                                 i.gattReady = i.gattReady || isGattMacConnectedOrBusy(m);
-                                i.configuringUntilMs = i.gattReady ? 0 : (millis() + 500UL);
                                 LOGF("[PRIMARY ROLE] %s -> Primary Switch OFF (GATT Tool Switch)\n", m.c_str());
                             }
                         }
@@ -5842,7 +6094,7 @@ void setup() {
             if (findMonitoredByMac(mac) == nullptr) {
                 bool gReady = (!isGattInit) || alreadyConnGatt;
                 uint8_t resolvedAddrType = inferRandomAddrType(mac, addrType);
-                monitoredList.push_back({mac, name, initAdvName, (uint8_t)speed, btnType, raw, false, false, 0, isGattInit, gReady, 0, false, 0, false, canAdvInit, initMatNum, initDevCat, 60, -1, canGattInit, resolvedAddrType});
+                monitoredList.push_back({mac, name, initAdvName, (uint8_t)speed, btnType, raw, false, false, 0, isGattInit, gReady, false, 0, false, canAdvInit, initMatNum, initDevCat, 60, -1, canGattInit, resolvedAddrType});
             }
             saveMonitoredToNvs();
             if (isGattInit && !alreadyConnGatt) enqueueGattConnect(mac, inferRandomAddrType(mac, addrType), btnType, (uint8_t)speed, true);
@@ -5860,10 +6112,10 @@ void setup() {
                 }
             }
             if (!inBle) {
-            bleList.push_back({name, initAdvName, mac, addrType, rssi, true, devCatToTypeStr(initDevCat), now, -1, 0, initMatNum, -1, raw, canAdvInit, canGattInit, 0, 0, 0, 0});
+                bleList.push_back({name, initAdvName, mac, addrType, rssi, true, devCatToTypeStr(initDevCat), now, -1, 0, initMatNum, -1, raw, canAdvInit, canGattInit, 0, 0, 0, 0});
+            }
         }
-    }
-    sendJsonStatus();
+        sendJsonStatus();
     });
 
     server.on("/api/monitored/delete", []() {
@@ -5966,6 +6218,7 @@ void loop() {
         updateStatusLed(now);
     }
     server.handleClient();
+    serviceSerialAndImprov(now);
 
     if (requestReboot && elapsedMs(now, rebootTimer) >= 600UL) {
         delay(100);
@@ -6116,7 +6369,7 @@ void loop() {
             if (MDNS.begin(hostname)) LOGLN("[MDNS] Started: http://bldb.local");
             if (mqtt_en && mqtt_ip.length() > 0) mqttClient.setServer(mqtt_ip.c_str(), mqtt_port);
         }
-    } else if (!wifiList.empty() && !wifiScanInProgress && !extConnTaskRunning.load() && !gattBtnTaskRunning.load() &&
+    } else if (!wifiList.empty() && !wifiScanInProgress && !improvProvPending && !extConnTaskRunning.load() && !gattBtnTaskRunning.load() &&
                connState != STATE_CONNECTING &&
                (lastBgWifiTryMs == 0 || elapsedMs(now, lastBgWifiTryMs) >= 15000UL)) {
         lastBgWifiTryMs = now;

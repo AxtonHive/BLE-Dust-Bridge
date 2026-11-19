@@ -1,7 +1,9 @@
 {
   "name": "BLE Dust Bridge",
-  "version": "latest",
+  "version": "1.0.0",
+  "home_assistant_domain": "esphome",
   "new_install_prompt_erase": true,
+  "improv": true,
   "builds": [
     {
       "chipFamily": "ESP32-S3",
