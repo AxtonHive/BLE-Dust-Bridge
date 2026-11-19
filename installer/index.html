@@ -60,6 +60,18 @@
       --esp-tools-button-text-color: #f7f3e3;
       --esp-tools-button-border-radius: 8px;
     }
+    #bldb-top-dialog {
+      border: none;
+      padding: 0;
+      background: transparent;
+      width: calc(100% - 32px);
+      max-width: 400px;
+      margin: auto;
+      overflow: visible;
+    }
+    #bldb-top-dialog::backdrop {
+      background: rgba(24, 36, 30, 0.72);
+    }
   </style>
 </head>
 <body>
@@ -68,6 +80,7 @@
     <p>Connect your M5Stack AtomS3 Lite via USB-C using Chrome, Brave or Edge to install firmware.</p>
     <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
   </div>
+  <dialog id="bldb-top-dialog"></dialog>
   <script>
     async function sendSerialAuthLine(line) {
       const port = window.__bldbSerialPort;
@@ -89,7 +102,7 @@
 
     (function () {
       window.__bldbWizardActive = false;
-      window.__bldbWizardStep = 'NONE'; // NONE | CONFIRM_ERASE | FLASHING | WIFI | PASSWORD | SETUP_COMPLETE | MENU_WIFI | MENU_PASSWORD
+      window.__bldbWizardStep = 'NONE'; // NONE | CONFIRM_ERASE | FLASHING | WIFI | PASSWORD | SETUP_COMPLETE | MAIN_MENU | MENU_WIFI | MENU_PASSWORD | ERROR
       window.__bldbDeviceUrl = 'http://bldb.local';
       window.__bldbDeviceIpUrl = '';
       window.__bldbAutoClickedInstall = false;
@@ -99,6 +112,17 @@
       const BTN_SELECTOR = 'md-text-button, md-filled-button, md-outlined-button, mwc-button, ewt-button, button, [role="button"]';
       const ROW_SELECTOR = 'ewt-icon-button, md-list-item, mwc-list-item, ewt-list-item, li, button, a, [role="menuitem"], [role="button"]';
 
+      function getTopDialog() {
+        return document.getElementById('bldb-top-dialog');
+      }
+
+      function hideTopDialog() {
+        const dlg = getTopDialog();
+        if (dlg && dlg.open) {
+          dlg.close();
+        }
+      }
+
       function resetSessionState() {
         window.__bldbWizardActive = false;
         window.__bldbWizardStep = 'NONE';
@@ -106,6 +130,7 @@
         window.__bldbDeviceIpUrl = '';
         window.__bldbAutoClickedInstall = false;
         window.__bldbAutoClickedNext = false;
+        hideTopDialog();
       }
 
       document.addEventListener('click', (ev) => {
@@ -113,14 +138,36 @@
         if (btn) resetSessionState();
       }, true);
 
-      function findAllElements(root, out = []) {
-        if (!root) return out;
+      function collectShadowRoots(root, roots = []) {
+        if (!root) return roots;
+        if (!roots.includes(root)) roots.push(root);
         const els = root.querySelectorAll ? root.querySelectorAll('*') : [];
         els.forEach((el) => {
-          out.push(el);
-          if (el.shadowRoot) findAllElements(el.shadowRoot, out);
+          if (el.shadowRoot) {
+            if (!observedRoots.has(el.shadowRoot)) {
+              attachShadowObserver(el.shadowRoot);
+            }
+            collectShadowRoots(el.shadowRoot, roots);
+          }
+        });
+        return roots;
+      }
+
+      function findAllElementsDeep(root) {
+        const roots = collectShadowRoots(root, []);
+        const out = [];
+        roots.forEach((r) => {
+          if (r.querySelectorAll) {
+            r.querySelectorAll('*').forEach((el) => out.push(el));
+          }
         });
         return out;
+      }
+
+      function getDeepText(root) {
+        return collectShadowRoots(root, [])
+          .map((r) => r.textContent || '')
+          .join(' ');
       }
 
       function getElLabel(el) {
@@ -175,7 +222,8 @@
         return best || el;
       }
 
-      function closeInstallerDialog() {
+      function closeAllDialogs() {
+        hideTopDialog();
         resetSessionState();
         const ewtDlg = document.querySelector('ewt-install-dialog');
         if (ewtDlg) {
@@ -184,28 +232,26 @@
         }
       }
 
-      function triggerConfirmEraseStep(ewtDlg) {
-        window.__bldbWizardStep = 'CONFIRM_ERASE';
-        if (ewtDlg) {
-          const sr = ewtDlg.shadowRoot || ewtDlg;
-          const els = findAllElements(sr);
-          const instItem = els.find((e) => getElLabel(e).indexOf('Install BLE Dust Bridge') !== -1);
-          if (instItem && !window.__bldbAutoClickedInstall) {
-            window.__bldbAutoClickedInstall = true;
-            instItem.click();
-          } else if ('_state' in ewtDlg && ewtDlg._state !== 'CONFIRM') {
-            ewtDlg._state = 'CONFIRM';
-            if (typeof ewtDlg.requestUpdate === 'function') ewtDlg.requestUpdate();
-          }
+      function advanceUnderlyingToConfirm(ewtDlg) {
+        if (!ewtDlg) return;
+        const sr = ewtDlg.shadowRoot || ewtDlg;
+        const els = findAllElementsDeep(sr);
+        const instItem = els.find((e) => getElLabel(e).indexOf('Install BLE Dust Bridge') !== -1);
+        if (instItem && !window.__bldbAutoClickedInstall) {
+          window.__bldbAutoClickedInstall = true;
+          instItem.click();
+        } else if ('_state' in ewtDlg && ewtDlg._state !== 'CONFIRM') {
+          ewtDlg._state = 'CONFIRM';
+          if (typeof ewtDlg.requestUpdate === 'function') ewtDlg.requestUpdate();
         }
       }
 
-      function executeConfirmedEraseAndInstall(dialogRoot) {
+      function executeConfirmedEraseAndInstall() {
         const ewtDlg = document.querySelector('ewt-install-dialog');
-        const sr = (ewtDlg && ewtDlg.shadowRoot) || dialogRoot;
-        const els = findAllElements(sr);
+        const sr = (ewtDlg && ewtDlg.shadowRoot) || document.body;
+        const els = findAllElementsDeep(sr);
 
-        // Ensure "Erase device" checkbox is checked before clicking Install
+        // Force "Erase device" checkbox ON
         const cb = els.find(
           (e) =>
             (e.tagName === 'INPUT' && e.type === 'checkbox') ||
@@ -223,14 +269,17 @@
             cb.click();
           }
         }
+        if (ewtDlg && '_erase' in ewtDlg) {
+          ewtDlg._erase = true;
+        }
 
         window.__bldbWizardActive = true;
         window.__bldbWizardStep = 'FLASHING';
-        const overlay = sr.querySelector && sr.querySelector('#bldb-custom-screen');
-        if (overlay) overlay.remove();
+        window.__bldbAutoClickedNext = false;
+        hideTopDialog();
 
         setTimeout(() => {
-          const freshEls = findAllElements((ewtDlg && ewtDlg.shadowRoot) || dialogRoot);
+          const freshEls = findAllElementsDeep((ewtDlg && ewtDlg.shadowRoot) || document.body);
           const installBtn = freshEls.find((e) => {
             if (!e.matches || !e.matches(BTN_SELECTOR)) return false;
             const t = getElLabel(e);
@@ -241,39 +290,35 @@
           } else if (ewtDlg && typeof ewtDlg._startInstall === 'function') {
             ewtDlg._startInstall(true);
           }
-        }, 40);
+        }, 50);
       }
 
-      function renderCustomScreen(dialogRoot, mode) {
-        if (!dialogRoot) return;
-        let screen = dialogRoot.querySelector('#bldb-custom-screen');
-        if (screen && screen.dataset.mode === mode) {
-          const subUrl = screen.querySelector('#bldb-setup-suburl');
+      function showTopScreen(mode) {
+        const dlg = getTopDialog();
+        if (!dlg) return;
+
+        if (dlg.open && dlg.dataset.mode === mode) {
+          const subUrl = dlg.querySelector('#bldb-setup-suburl');
           if (subUrl) {
-            const disp = window.__bldbDeviceIpUrl
+            subUrl.textContent = window.__bldbDeviceIpUrl
               ? `http://bldb.local · ${window.__bldbDeviceIpUrl}`
               : 'http://bldb.local';
-            subUrl.textContent = disp;
           }
           return;
         }
-        if (screen) screen.remove();
 
-        screen = document.createElement('div');
-        screen.id = 'bldb-custom-screen';
-        screen.dataset.mode = mode;
-        screen.style.cssText =
-          'position:fixed;inset:0;z-index:9999;background:rgba(24,36,30,0.68);display:flex;align-items:center;justify-content:center;padding:16px;';
+        dlg.dataset.mode = mode;
+        dlg.innerHTML = '';
 
         const card = document.createElement('div');
         card.style.cssText =
-          'width:100%;max-width:400px;background:#f7f3e3;border:1px solid #dfd9c5;border-radius:16px;padding:24px 22px;box-shadow:0 18px 42px rgba(0,0,0,0.34);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#1f2e26;text-align:left;';
+          'width:100%;background:#f7f3e3;border:1px solid #dfd9c5;border-radius:16px;padding:24px 22px;box-shadow:0 18px 42px rgba(0,0,0,0.36);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#1f2e26;text-align:left;';
 
         if (mode === 'CONFIRM_ERASE') {
           card.innerHTML = `
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px;">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:12px;">
               <div style="font-size:1.12rem;font-weight:700;color:#283b31;line-height:1.35;">Confirm erase and install BLE-Dust Extractor Firmware</div>
-              <button id="bldb-ce-close" type="button" style="background:transparent;border:none;font-size:1.45rem;line-height:1;color:#5c6b63;cursor:pointer;padding:0 2px;align-self:flex-start;">&times;</button>
+              <button id="bldb-ce-close" type="button" style="background:transparent;border:none;font-size:1.45rem;line-height:1;color:#5c6b63;cursor:pointer;padding:0 2px;">&times;</button>
             </div>
             <p style="margin:0 0 20px 0;font-size:0.88rem;color:#5c6b63;line-height:1.45;">
               This will erase the device and flash the latest BLE-Dust Extractor Firmware.
@@ -283,12 +328,13 @@
               <button id="bldb-ce-confirm" type="button" style="flex:1;padding:10px 14px;border-radius:8px;border:none;background:#283b31;color:#f7f3e3;font-size:0.9rem;font-weight:600;cursor:pointer;">Confirm</button>
             </div>
           `;
-          screen.appendChild(card);
-          dialogRoot.appendChild(screen);
+          dlg.appendChild(card);
+          if (dlg.open) dlg.close();
+          dlg.showModal();
 
-          card.querySelector('#bldb-ce-close').onclick = closeInstallerDialog;
-          card.querySelector('#bldb-ce-cancel').onclick = closeInstallerDialog;
-          card.querySelector('#bldb-ce-confirm').onclick = () => executeConfirmedEraseAndInstall(dialogRoot);
+          card.querySelector('#bldb-ce-close').onclick = closeAllDialogs;
+          card.querySelector('#bldb-ce-cancel').onclick = closeAllDialogs;
+          card.querySelector('#bldb-ce-confirm').onclick = executeConfirmedEraseAndInstall;
           return;
         }
 
@@ -299,7 +345,7 @@
               <div style="font-size:1.12rem;font-weight:700;color:#283b31;">Configure Password</div>
               <button id="bldb-pw-close" type="button" style="background:transparent;border:none;font-size:1.45rem;line-height:1;color:#5c6b63;cursor:pointer;padding:0 2px;">&times;</button>
             </div>
-            <div style="font-size:0.82rem;color:#5c6b63;margin-bottom:14px;">Protect the Bridge Web UI with a username and password, or disable login.</div>
+            <div style="font-size:0.82rem;color:#5c6b63;margin-bottom:14px;">Set a username and password for the Bridge Web UI, or toggle Password Protection off.</div>
             <div style="background:#fbf9f1;border:1px solid #dfd9c5;border-radius:12px;padding:14px;margin-bottom:16px;">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;">
                 <div>
@@ -323,8 +369,9 @@
               <button id="bldb-pw-continue" type="button" style="flex:1;padding:10px 14px;border-radius:8px;border:none;background:#283b31;color:#f7f3e3;font-size:0.9rem;font-weight:600;cursor:pointer;">Continue</button>
             </div>
           `;
-          screen.appendChild(card);
-          dialogRoot.appendChild(screen);
+          dlg.appendChild(card);
+          if (dlg.open) dlg.close();
+          dlg.showModal();
 
           const enCb = card.querySelector('#bldb-pw-en');
           const stateLbl = card.querySelector('#bldb-pw-state-lbl');
@@ -350,12 +397,12 @@
           syncToggle();
 
           const finishPwStep = () => {
-            screen.remove();
-            window.__bldbWizardStep = isWizard ? 'SETUP_COMPLETE' : 'MAIN_MENU';
-            sanitizeNodeTree(dialogRoot, dialogRoot);
+            const nextMode = isWizard ? 'SETUP_COMPLETE' : 'MAIN_MENU';
+            window.__bldbWizardStep = nextMode;
+            showTopScreen(nextMode);
           };
 
-          card.querySelector('#bldb-pw-close').onclick = closeInstallerDialog;
+          card.querySelector('#bldb-pw-close').onclick = closeAllDialogs;
           card.querySelector('#bldb-pw-skip').onclick = finishPwStep;
           card.querySelector('#bldb-pw-continue').onclick = async () => {
             if (!enCb.checked) {
@@ -390,7 +437,7 @@
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                 </div>
                 <div style="min-width:0;">
-                  <div style="font-size:0.98rem;font-weight:700;color:#283b31;">Successfully set up</div>
+                  <div style="font-size:1rem;font-weight:700;color:#283b31;">Successfully set up</div>
                   <div id="bldb-setup-suburl" style="font-size:0.78rem;color:#4a5c53;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${subUrlText}</div>
                 </div>
               </div>`
@@ -425,67 +472,83 @@
               </button>
             </div>
           `;
-          screen.appendChild(card);
-          dialogRoot.appendChild(screen);
+          dlg.appendChild(card);
+          if (dlg.open) dlg.close();
+          dlg.showModal();
 
-          card.querySelector('#bldb-mm-close').onclick = closeInstallerDialog;
+          card.querySelector('#bldb-mm-close').onclick = closeAllDialogs;
           card.querySelector('#bldb-mm-settings').onclick = () => {
             const targetUrl = window.__bldbDeviceIpUrl || window.__bldbDeviceUrl || 'http://bldb.local';
             window.open(targetUrl, '_blank', 'noopener');
           };
           card.querySelector('#bldb-mm-wifi').onclick = () => {
-            screen.remove();
+            hideTopDialog();
             window.__bldbWizardStep = 'MENU_WIFI';
             const ewtDlg = document.querySelector('ewt-install-dialog');
-            const sr = (ewtDlg && ewtDlg.shadowRoot) || dialogRoot;
-            const els = findAllElements(sr);
-            const wifiBtn = els.find((e) => {
-              const t = getElLabel(e);
-              return t === 'Connect to Wi-Fi' || t === 'Change Wi-Fi';
-            });
-            if (wifiBtn) {
-              wifiBtn.click();
-            } else if (ewtDlg && '_state' in ewtDlg) {
-              ewtDlg._state = 'IMPROV_WIFI';
-              if (typeof ewtDlg.requestUpdate === 'function') ewtDlg.requestUpdate();
+            if (ewtDlg) {
+              const els = findAllElementsDeep(ewtDlg.shadowRoot || ewtDlg);
+              const wifiBtn = els.find((e) => {
+                const t = getElLabel(e);
+                return t === 'Connect to Wi-Fi' || t === 'Change Wi-Fi';
+              });
+              if (wifiBtn) {
+                wifiBtn.click();
+              } else if ('_state' in ewtDlg) {
+                ewtDlg._state = 'IMPROV_WIFI';
+                if (typeof ewtDlg.requestUpdate === 'function') ewtDlg.requestUpdate();
+              }
             }
           };
           card.querySelector('#bldb-mm-pw').onclick = () => {
             window.__bldbWizardStep = 'MENU_PASSWORD';
-            renderCustomScreen(dialogRoot, 'MENU_PASSWORD');
+            showTopScreen('MENU_PASSWORD');
           };
           card.querySelector('#bldb-mm-erase').onclick = () => {
             const ewtDlg = document.querySelector('ewt-install-dialog');
-            triggerConfirmEraseStep(ewtDlg);
-            renderCustomScreen(dialogRoot, 'CONFIRM_ERASE');
+            window.__bldbAutoClickedInstall = false;
+            advanceUnderlyingToConfirm(ewtDlg);
+            window.__bldbWizardStep = 'CONFIRM_ERASE';
+            showTopScreen('CONFIRM_ERASE');
           };
         }
       }
 
-      function sanitizeNodeTree(root, hostDialog) {
-        if (!root) return;
+      function stripTwoMinutesCopy(roots) {
+        roots.forEach((r) => {
+          const walker = document.createTreeWalker(r, NodeFilter.SHOW_TEXT, null);
+          let n;
+          while ((n = walker.nextNode())) {
+            const v = n.nodeValue || '';
+            if (v.indexOf('This will take 2 minutes') !== -1 || v.indexOf('Keep this page visible') !== -1) {
+              n.nodeValue = '';
+            }
+          }
+        });
+      }
 
+      function sanitizeEwtDialog() {
         const ewtDlg = document.querySelector('ewt-install-dialog');
-        const dialogBoundary = (ewtDlg && ewtDlg.shadowRoot) || root;
-        const fullText = (dialogBoundary.textContent || '');
-        const allEls = findAllElements(dialogBoundary);
+        if (!ewtDlg) return;
+
+        const roots = collectShadowRoots(ewtDlg.shadowRoot || ewtDlg, []);
+        const fullText = getDeepText(ewtDlg.shadowRoot || ewtDlg);
+        const allEls = findAllElementsDeep(ewtDlg.shadowRoot || ewtDlg);
+
+        // Always strip "This will take 2 minutes." across all shadow roots
+        stripTwoMinutesCopy(roots);
 
         allEls.forEach((el) => {
-          if (el.shadowRoot && !observedRoots.has(el.shadowRoot)) {
-            attachShadowObserver(el.shadowRoot, hostDialog || el);
-          }
-
           const rawTxt = getElLabel(el);
 
           // Hide Logs & Console and Add to Home Assistant everywhere
           if (rawTxt === 'Logs & Console' || rawTxt === 'Add to Home Assistant') {
-            const row = findOuterMenuItem(el, dialogBoundary);
+            const row = findOuterMenuItem(el, ewtDlg.shadowRoot || ewtDlg);
             if (row) row.style.setProperty('display', 'none', 'important');
           }
 
-          // Capture device IP URL from Visit Device link if present
+          // Capture device IP URL from Visit Device link
           if (rawTxt === 'Visit Device') {
-            const row = findOuterMenuItem(el, dialogBoundary);
+            const row = findOuterMenuItem(el, ewtDlg.shadowRoot || ewtDlg);
             const href = (row && (row.getAttribute('href') || row.href)) || el.getAttribute('href') || el.href || '';
             if (href && href.startsWith('http')) {
               window.__bldbDeviceIpUrl = href.replace(/\/+$/, '');
@@ -494,44 +557,45 @@
           }
         });
 
-        // 1. Handle Error screen -> yield custom overlays so Error is visible
+        // 1. Error screen -> hide custom dialog so Error is shown directly
         if (
           fullText.indexOf('Installation failed') !== -1 ||
           fullText.indexOf('Failed to initialize') !== -1 ||
           fullText.indexOf('An error occurred') !== -1
         ) {
           window.__bldbWizardStep = 'ERROR';
-          const existing = dialogBoundary.querySelector && dialogBoundary.querySelector('#bldb-custom-screen');
-          if (existing) existing.remove();
+          hideTopDialog();
           return;
         }
 
-        // 2. Detect blank ESP on connect -> immediately move to "Confirm erase and install BLE-Dust Extractor Firmware"
+        // 2. Detect blank ESP vs already-flashed ESP right after Connecting completes
         const hasInstallBlankItem = allEls.some((e) => getElLabel(e).indexOf('Install BLE Dust Bridge') !== -1);
         const hasFlashedDashboard =
           fullText.indexOf('Connected to BLE-Dust-Bridge') !== -1 ||
           allEls.some((e) => {
             const t = getElLabel(e);
-            return t === 'Connect to Wi-Fi' || t === 'Change Wi-Fi';
+            return t === 'Connect to Wi-Fi' || t === 'Change Wi-Fi' || t === 'Visit Device';
           });
 
         if (window.__bldbWizardStep === 'NONE') {
           if (hasInstallBlankItem && !hasFlashedDashboard) {
             window.__bldbWizardActive = true;
-            triggerConfirmEraseStep(ewtDlg);
-            renderCustomScreen(dialogBoundary, 'CONFIRM_ERASE');
+            window.__bldbWizardStep = 'CONFIRM_ERASE';
+            advanceUnderlyingToConfirm(ewtDlg);
+            showTopScreen('CONFIRM_ERASE');
             return;
           }
           if (hasFlashedDashboard) {
             window.__bldbWizardActive = false;
             window.__bldbWizardStep = 'MAIN_MENU';
-            renderCustomScreen(dialogBoundary, 'MAIN_MENU');
+            showTopScreen('MAIN_MENU');
             return;
           }
         }
 
         if (window.__bldbWizardStep === 'CONFIRM_ERASE') {
-          renderCustomScreen(dialogBoundary, 'CONFIRM_ERASE');
+          advanceUnderlyingToConfirm(ewtDlg);
+          showTopScreen('CONFIRM_ERASE');
           return;
         }
 
@@ -544,9 +608,10 @@
             (e.className && typeof e.className === 'string' && e.className.indexOf('progress') !== -1)
         );
         if (window.__bldbWizardStep === 'FLASHING' || hasProgressRing) {
-          // Hide any text/paragraphs underneath the circular percentage ring
+          hideTopDialog();
           allEls.forEach((el) => {
-            if (el.tagName === 'P' || el.tagName === 'SPAN' || el.tagName === 'DIV') {
+            const tag = el.tagName;
+            if (tag === 'P' || tag === 'SPAN' || tag === 'DIV' || tag === 'EWT-PAGE-MESSAGE') {
               const t = (el.textContent || '').trim();
               if (
                 el.children.length === 0 &&
@@ -558,14 +623,16 @@
               }
             }
           });
-          const walker = document.createTreeWalker(dialogBoundary, NodeFilter.SHOW_TEXT, null);
-          let n;
-          while ((n = walker.nextNode())) {
-            const v = (n.nodeValue || '').trim();
-            if (v.length > 0 && !/^\d+%$/.test(v) && v !== '×') {
-              n.nodeValue = '';
+          roots.forEach((r) => {
+            const walker = document.createTreeWalker(r, NodeFilter.SHOW_TEXT, null);
+            let n;
+            while ((n = walker.nextNode())) {
+              const v = (n.nodeValue || '').trim();
+              if (v.length > 0 && !/^\d+%$/.test(v) && v !== '×') {
+                n.nodeValue = '';
+              }
             }
-          }
+          });
         }
 
         // 4. Installation complete -> auto-advance immediately to Configure Wi-Fi
@@ -579,7 +646,7 @@
           return;
         }
 
-        // 5. Configure Wi-Fi screen (Improv Wi-Fi): ensure "Skip" and "Continue" buttons
+        // 5. Configure Wi-Fi screen -> ensure "Skip" and "Continue" buttons
         if (
           window.__bldbWizardStep === 'WIFI' ||
           window.__bldbWizardStep === 'MENU_WIFI' ||
@@ -587,16 +654,13 @@
           fullText.indexOf('Connect to Wi-Fi') !== -1
         ) {
           if (fullText.indexOf('Device connected to the network') !== -1) {
-            if (window.__bldbWizardStep === 'MENU_WIFI') {
-              window.__bldbWizardStep = 'MAIN_MENU';
-              renderCustomScreen(dialogBoundary, 'MAIN_MENU');
-            } else {
-              window.__bldbWizardStep = 'PASSWORD';
-              renderCustomScreen(dialogBoundary, 'PASSWORD');
-            }
+            const nextStep = (window.__bldbWizardStep === 'MENU_WIFI') ? 'MAIN_MENU' : 'PASSWORD';
+            window.__bldbWizardStep = nextStep;
+            showTopScreen(nextStep);
             return;
           }
 
+          hideTopDialog();
           const actionBtns = allEls.filter((e) => e.matches && e.matches(BTN_SELECTOR));
           const connectBtn = actionBtns.find((b) => {
             const t = getElLabel(b);
@@ -607,24 +671,23 @@
           }
 
           const hasSkip = actionBtns.some((b) => getElLabel(b) === 'Skip') ||
-            (dialogBoundary.querySelector && !!dialogBoundary.querySelector('#bldb-wifi-skip-btn'));
+            allEls.some((e) => e.id === 'bldb-wifi-skip-btn');
           if (!hasSkip && connectBtn && connectBtn.parentNode) {
             const skipBtn = document.createElement('button');
             skipBtn.id = 'bldb-wifi-skip-btn';
             skipBtn.type = 'button';
+            if (connectBtn.getAttribute('slot')) {
+              skipBtn.setAttribute('slot', connectBtn.getAttribute('slot'));
+            }
             skipBtn.textContent = 'Skip';
             skipBtn.style.cssText =
-              'margin-right:10px;padding:8px 16px;border-radius:8px;border:1px solid #dfd9c5;background:#eef0eb;color:#1f2e26;font-weight:600;font-size:0.86rem;cursor:pointer;';
+              'margin-right:10px;padding:8px 18px;border-radius:999px;border:1px solid #dfd9c5;background:#eef0eb;color:#1f2e26;font-weight:600;font-size:0.86rem;cursor:pointer;';
             skipBtn.onclick = (ev) => {
               ev.preventDefault();
               ev.stopPropagation();
-              if (window.__bldbWizardStep === 'MENU_WIFI') {
-                window.__bldbWizardStep = 'MAIN_MENU';
-                renderCustomScreen(dialogBoundary, 'MAIN_MENU');
-              } else {
-                window.__bldbWizardStep = 'PASSWORD';
-                renderCustomScreen(dialogBoundary, 'PASSWORD');
-              }
+              const nextStep = (window.__bldbWizardStep === 'MENU_WIFI') ? 'MAIN_MENU' : 'PASSWORD';
+              window.__bldbWizardStep = nextStep;
+              showTopScreen(nextStep);
             };
             connectBtn.parentNode.insertBefore(skipBtn, connectBtn);
           } else {
@@ -634,35 +697,30 @@
               existingSkip.addEventListener('click', (ev) => {
                 ev.preventDefault();
                 ev.stopPropagation();
-                if (window.__bldbWizardStep === 'MENU_WIFI') {
-                  window.__bldbWizardStep = 'MAIN_MENU';
-                  renderCustomScreen(dialogBoundary, 'MAIN_MENU');
-                } else {
-                  window.__bldbWizardStep = 'PASSWORD';
-                  renderCustomScreen(dialogBoundary, 'PASSWORD');
-                }
+                const nextStep = (window.__bldbWizardStep === 'MENU_WIFI') ? 'MAIN_MENU' : 'PASSWORD';
+                window.__bldbWizardStep = nextStep;
+                showTopScreen(nextStep);
               }, true);
             }
           }
           return;
         }
 
-        // 6. Keep active custom screen rendered for PASSWORD, MENU_PASSWORD, SETUP_COMPLETE, or MAIN_MENU
+        // 6. Keep Top Layer custom screen active for PASSWORD, MENU_PASSWORD, SETUP_COMPLETE, or MAIN_MENU
         if (
           window.__bldbWizardStep === 'PASSWORD' ||
           window.__bldbWizardStep === 'MENU_PASSWORD' ||
           window.__bldbWizardStep === 'SETUP_COMPLETE' ||
           window.__bldbWizardStep === 'MAIN_MENU'
         ) {
-          renderCustomScreen(dialogBoundary, window.__bldbWizardStep);
+          showTopScreen(window.__bldbWizardStep);
         }
       }
 
-      function attachShadowObserver(shadowRoot, hostDialog) {
+      function attachShadowObserver(shadowRoot) {
         if (!shadowRoot || observedRoots.has(shadowRoot)) return;
         observedRoots.add(shadowRoot);
-        sanitizeNodeTree(shadowRoot, hostDialog);
-        const mo = new MutationObserver(() => sanitizeNodeTree(shadowRoot, hostDialog));
+        const mo = new MutationObserver(() => sanitizeEwtDialog());
         mo.observe(shadowRoot, { childList: true, subtree: true, characterData: true });
       }
 
@@ -670,24 +728,15 @@
         for (const m of mutations) {
           for (const node of m.addedNodes) {
             if (node && node.nodeType === 1) {
-              if (node.shadowRoot) attachShadowObserver(node.shadowRoot, node);
-              sanitizeNodeTree(node, node);
+              if (node.shadowRoot) attachShadowObserver(node.shadowRoot);
+              sanitizeEwtDialog();
             }
           }
         }
       });
       bodyObserver.observe(document.body, { childList: true, subtree: true });
 
-      setInterval(() => {
-        const dlgs = document.querySelectorAll('ewt-install-dialog, mwc-dialog, md-dialog');
-        dlgs.forEach((d) => {
-          if (d.shadowRoot) {
-            attachShadowObserver(d.shadowRoot, d);
-            sanitizeNodeTree(d.shadowRoot, d);
-          }
-          sanitizeNodeTree(d, d);
-        });
-      }, 150);
+      setInterval(sanitizeEwtDialog, 120);
     })();
   </script>
 </body>
