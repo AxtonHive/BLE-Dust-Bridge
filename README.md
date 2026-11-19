@@ -5,3 +5,6 @@ A BLE bridge for Festool dust extractors, passive/GATT wireless switches, Festoo
 ## Web Installer & OTA Firmware
 - **Web Installer (Flash a fresh AtomS3 via USB):** https://axtonhive.github.io/BLE-Dust-Bridge/
 - **Latest OTA Binary (`firmware.bin` for `/update`):** https://github.com/AxtonHive/BLE-Dust-Bridge/releases/download/latest/firmware.bin
+
+## Shelly Plug Script
+- **Gen3 / Gen4 Power Beacon:** [`shelly/shelly_dust_beacon.js`](shelly/shelly_dust_beacon.js)

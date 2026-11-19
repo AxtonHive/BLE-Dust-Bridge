@@ -46,7 +46,8 @@ jobs:
         run: |
           ESPTOOL_PY=$(find ~/.platformio/packages/tool-esptoolpy -name esptool.py | head -n 1)
           BOOT_APP0=$(find ~/.platformio/packages/framework-arduinoespressif32 -name boot_app0.bin | head -n 1)
-          ~/.platformio/penv/bin/python "$ESPTOOL_PY" --chip esp32s3 merge_bin \
+          PY_BIN=$(command -v ~/.platformio/penv/bin/python || command -v python3 || command -v python)
+          "$PY_BIN" "$ESPTOOL_PY" --chip esp32s3 merge_bin \
             -o bldb-factory.bin \
             --flash_mode dio --flash_freq 80m --flash_size 8MB \
             0x0 .pio/build/m5stack-atoms3/bootloader.bin \
