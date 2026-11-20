@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_wifi.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
@@ -5515,11 +5516,11 @@ void setup() {
             setAtomLed(yellowOn ? 96 : 0, yellowOn ? 72 : 0, 0);
         }
         if (WiFi.status() == WL_CONNECTED) {
-            connected = true;
-            WiFi.setSleep(WIFI_PS_MIN_MODEM);
-            LOGF("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
-            break;
-        }
+        connected = true;
+        WiFi.setSleep(WIFI_PS_MIN_MODEM);
+        LOGF("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+        break;
+    }
         WiFi.disconnect(false);
         delay(100);
     }
@@ -5827,8 +5828,9 @@ void setup() {
         wifiScanInProgress = true;
         NimBLEDevice::getScan()->stop();
         if (WiFi.status() != WL_CONNECTED) {
-            WiFi.disconnect(false);
+            WiFi.disconnect(false, true);
         }
+        WiFi.setSleep(WIFI_PS_NONE);
         delay(20);
         int n = WiFi.scanNetworks(false, true);
         if (n == -1) {
@@ -5852,7 +5854,7 @@ void setup() {
             if (demandDirty) { demandDirty = false; evaluateMotorDemand(); }
             delay(15);
         }
-        int n = WiFi.scanComplete();
+        if (n < 0) n = WiFi.scanComplete();
         struct ScanNet { String ssid; int rssi; };
         std::vector<ScanNet> uniqueNets;
         for (int i = 0; i < n; i++) {
