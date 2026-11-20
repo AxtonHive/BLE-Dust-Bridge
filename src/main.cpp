@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <esp_wifi.h>
+#include <esp_wifi.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
@@ -31,11 +32,7 @@ void setAtomLed(uint8_t r, uint8_t g, uint8_t b) {
     if (ledMutex && xSemaphoreTake(ledMutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
     if ((int)r != lastR || (int)g != lastG || (int)b != lastB) {
         lastR = r; lastG = g; lastB = b;
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-        rgbLedWrite(RGB_LED_GPIO, r, g, b);
-#else
         neopixelWrite(RGB_LED_GPIO, r, g, b);
-#endif
     }
     if (ledMutex) xSemaphoreGive(ledMutex);
 }
@@ -3210,12 +3207,17 @@ void improvSendPacket(uint8_t type, const uint8_t* data, uint8_t len) {
     for (size_t i = 0; i < idx; i++) csum = (uint8_t)(csum + pkt[i]);
     pkt[idx++] = csum;
     pkt[idx++] = 0x0A;
+    
+    Serial.setTxTimeoutMs(50);
     if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         Serial.write(pkt, idx);
+        Serial.flush();
         xSemaphoreGive(logMutex);
     } else {
         Serial.write(pkt, idx);
+        Serial.flush();
     }
+    Serial.setTxTimeoutMs(0);
 }
 
 void improvSendState(uint8_t state) {
@@ -3272,8 +3274,13 @@ void handleImprovRpcCommand(const uint8_t* data, uint8_t len, unsigned long now)
         if (WiFi.status() != WL_CONNECTED) {
             WiFi.disconnect(false);
         }
+        WiFi.setSleep(WIFI_PS_NONE);
         delay(20);
         int n = WiFi.scanNetworks(false, true);
+        if (n == -1) {
+            delay(250);
+            n = WiFi.scanNetworks(false, true);
+        }
         struct ScanNet { String ssid; int rssi; bool enc; };
         std::vector<ScanNet> nets;
         for (int i = 0; i < n; i++) {
@@ -3294,10 +3301,12 @@ void handleImprovRpcCommand(const uint8_t* data, uint8_t len, unsigned long now)
         std::sort(nets.begin(), nets.end(), [](const ScanNet& a, const ScanNet& b) { return a.rssi > b.rssi; });
         for (const auto& u : nets) {
             improvSendRpcResult(0x04, { u.ssid, String(u.rssi), u.enc ? "YES" : "NO" });
+            delay(15);
         }
         improvSendRpcResult(0x04, {});
         WiFi.scanDelete();
         wifiScanInProgress = false;
+        WiFi.setSleep(WIFI_PS_MIN_MODEM);
         setCoexScanner();
     } else if (cmd == 0x01) { // SEND_WIFI_SETTINGS
         if (len < 4) {
@@ -3457,12 +3466,12 @@ void serviceSerialAndImprov(unsigned long now) {
     }
 
     if (improvProvPending) {
-        if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == improvProvSsid) {
+        if (WiFi.status() == WL_CONNECTED) {
             improvProvPending = false;
             improvSendState(0x04);
             improvSendRpcResult(0x01, { getDeviceWebUrl() });
             LOGF("[IMPROV] Wi-Fi connected! URL: %s\n", getDeviceWebUrl().c_str());
-        } else if (elapsedMs(now, improvProvStartMs) >= 15000UL) {
+        } else if (elapsedMs(now, improvProvStartMs) >= 28000UL) {
             improvProvPending = false;
             improvSendError(0x03);
             improvSendState(0x02);
@@ -5496,7 +5505,7 @@ void setup() {
 
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
-    WiFi.disconnect(false, true);
+    WiFi.disconnect(false);
     delay(50);
     WiFi.setSleep(WIFI_PS_NONE);
     WiFi.setHostname(hostname);
@@ -5516,11 +5525,11 @@ void setup() {
             setAtomLed(yellowOn ? 96 : 0, yellowOn ? 72 : 0, 0);
         }
         if (WiFi.status() == WL_CONNECTED) {
-        connected = true;
-        WiFi.setSleep(WIFI_PS_MIN_MODEM);
-        LOGF("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
-        break;
-    }
+            connected = true;
+            WiFi.setSleep(WIFI_PS_MIN_MODEM);
+            LOGF("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+            break;
+        }
         WiFi.disconnect(false);
         delay(100);
     }
@@ -5828,7 +5837,7 @@ void setup() {
         wifiScanInProgress = true;
         NimBLEDevice::getScan()->stop();
         if (WiFi.status() != WL_CONNECTED) {
-            WiFi.disconnect(false, true);
+            WiFi.disconnect(false);
         }
         WiFi.setSleep(WIFI_PS_NONE);
         delay(20);
@@ -5882,6 +5891,7 @@ void setup() {
         server.send(200, "application/json", out);
         WiFi.scanDelete();
         wifiScanInProgress = false;
+        WiFi.setSleep(WIFI_PS_MIN_MODEM);
         setCoexScanner();
     });
 
